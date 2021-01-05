@@ -26,9 +26,10 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/elliotchance/sshtunnel"
+	//"github.com/elliotchance/sshtunnel"
 	huproxy "github.com/google/huproxy/lib"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -46,6 +47,25 @@ var (
 
 	upgrader websocket.Upgrader
 )
+
+func startSSH(server, user, keyString string, session *ssh.Session) {
+	// Set up terminal modes
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          0,     // disable echoing
+		ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud
+		ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
+	}
+
+	// Request pseudo terminal
+	if err := session.RequestPty("xterm", 80, 40, modes); err != nil {
+		log.Fatalf("request for pseudo terminal failed: %s", err)
+	}
+
+	// Start remote shell
+	if err := session.Shell(); err != nil {
+		log.Fatalf("failed to start shell: %s", err)
+	}
+}
 
 // Key model
 type Key struct {
@@ -67,8 +87,6 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	proxy := vars["proxy"]
 	keyID := vars["key"]
-	host := vars["host"]
-	port := vars["port"]
 	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
 	mac := vars["mac"]
 
@@ -76,7 +94,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
 
 	// Write Data to it
-	h.Write([]byte(proxy + "," + keyID + "," + host + "," + port + "," + vars["expiry"]))
+	h.Write([]byte(proxy + "," + keyID + "," + vars["expiry"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -126,40 +144,55 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		log.Fatal(err)
 	}
 
-	priv, err := ssh.ParsePrivateKey([]byte(key.Private))
+	proxySplit := strings.Split(proxy, "@")
+	username := proxySplit[0]
+	hostAndPort := proxySplit[1]
+
+	signer, err := ssh.ParsePrivateKey([]byte(key.Private))
 	if err != nil {
-		log.Fatal(err)
+		panic("Failed to parse private key: " + err.Error())
 	}
-	// Setup the tunnel, but do not yet start it yet.
-	tunnel := sshtunnel.NewSSHTunnel(
-		// User and host of tunnel server, it will default to port 22
-		// if not specified.
-		proxy,
-		ssh.PublicKeys(priv), // 1. private key
-		host+":"+port,
-		"0",
-	)
-	// You can provide a logger for debugging, or remove this line to
-	// make it silent.
-	tunnel.Log = log.New(os.Stdout, "", log.Ldate|log.Lmicroseconds)
-	// Start the server in the background. You will need to wait a
-	// small amount of time for it to bind to the localhost port
-	// before you can start sending connections.
-	go tunnel.Start()
-	time.Sleep(100 * time.Millisecond)
+
+	config := &ssh.ClientConfig{
+		User: username,
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		},
+		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
+	}
+
+	connSSH, err := ssh.Dial("tcp", hostAndPort, config)
+	if err != nil {
+		panic("Failed to dial: " + err.Error())
+	}
+	defer connSSH.Close()
+
+	// Each ClientConn can support multiple interactive sessions,
+	// represented by a Session.
+	session, err := connSSH.NewSession()
+	if err != nil {
+		panic("Failed to create session: " + err.Error())
+	}
+	defer session.Close()
+
+	remoteStdin, err := session.StdinPipe()
+	if err != nil {
+		panic("Failed to create stdinpipe: " + err.Error())
+	}
+	remoteStdout, err := session.StdoutPipe()
+	if err != nil {
+		panic("Failed to create stdoutpipe: " + err.Error())
+	}
+
+	go startSSH(hostAndPort, username, key.Private, session)
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	defer conn.Close()
 
-	s, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(tunnel.Local.Port)), *dialTimeout)
-	if err != nil {
-		log.Println(err)
-		return
-	}
+	defer conn.Close()
 
 	// websocket -> server
 	go func() {
@@ -178,7 +211,8 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 			if mt != websocket.BinaryMessage {
 				log.Fatal("blah")
 			}
-			if _, err := io.Copy(s, r); err != nil {
+
+			if _, err := io.Copy(remoteStdin, r); err != nil {
 				log.Printf("Reading from websocket: %v", err)
 				cancel()
 			}
@@ -187,7 +221,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// server -> websocket
 	// TODO: NextWriter() seems to be broken.
-	if err := huproxy.File2WS(ctx, cancel, s, conn); err == io.EOF {
+	if err := huproxy.File2WS(ctx, cancel, remoteStdout, conn); err == io.EOF {
 		if err := conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
@@ -213,7 +247,7 @@ func main() {
 
 	log.Printf("huproxy %s", huproxy.Version)
 	m := mux.NewRouter()
-	m.HandleFunc("/proxy/{proxy}/{key}/{host}/{port}/{expiry}/{mac}", handleProxy)
+	m.HandleFunc("/proxy/{proxy}/{key}/{expiry}/{mac}", handleProxy)
 	s := &http.Server{
 		Addr:           *listen,
 		Handler:        m,
