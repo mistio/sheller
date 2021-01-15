@@ -19,7 +19,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -29,6 +28,9 @@ import (
 	"strings"
 	"time"
 	"sync"
+	"hash"
+	"errors"
+	"fmt"
 
 	"github.com/elliotchance/sshtunnel"
 	huproxy "github.com/google/huproxy/lib"
@@ -94,7 +96,55 @@ func NewCancelableReader(ctx context.Context, r io.Reader) *CancelableReader {
 	return c
 }
 
-func startSSH(server, user, keyString string, session *ssh.Session) {
+func getPrivateKey(h hash.Hash, mac string, expiry int64, keyID string) (ssh.AuthMethod, error) {
+	// Get result and encode as hexadecimal string
+	sha := hex.EncodeToString(h.Sum(nil))
+
+	if sha != mac {
+		return nil, errors.New("HMAC mismatch")
+	}
+
+	if expiry < time.Now().Unix() {
+		return nil, errors.New("Session expired")
+	}
+
+	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(mctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
+	if err != nil {
+		return nil, err
+	}
+
+	// Check the connection
+	err = client.Ping(context.TODO(), nil)
+
+	if err != nil {
+		return nil, err
+	}
+
+	log.Println("Connected to MongoDB!")
+	collection := client.Database("mist2").Collection("keys")
+
+	key := Key{}
+
+	findResult := collection.FindOne(mctx, bson.M{"_id": keyID})
+	if err := findResult.Err(); err != nil {
+		return nil, err
+	}
+	err = findResult.Decode(&key)
+	if err != nil {
+		return nil, err
+	}
+
+	priv, err := ssh.ParsePrivateKey([]byte(key.Private))
+	if err != nil {
+		return nil, err
+	}
+
+	return ssh.PublicKeys(priv), nil
+}
+
+func startSSH(session *ssh.Session) error {
 	// Set up terminal modes
 	modes := ssh.TerminalModes{
 		ssh.ECHO:          1,
@@ -104,13 +154,15 @@ func startSSH(server, user, keyString string, session *ssh.Session) {
 
 	// Request pseudo terminal
 	if err := session.RequestPty("xterm", 80, 40, modes); err != nil {
-		log.Fatalf("request for pseudo terminal failed: %s", err)
+		return fmt.Errorf("request for pseudo terminal failed: %s", err)
 	}
 
 	// Start remote shell
 	if err := session.Shell(); err != nil {
-		log.Fatalf("failed to start shell: %s", err)
+		return fmt.Errorf("failed to start shell: %s", err)
 	}
+
+	return nil
 }
 
 // Key model
@@ -143,73 +195,28 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	h.Write([]byte(proxy + "," + keyID + "," + vars["expiry"]))
 
 	// Get result and encode as hexadecimal string
-	sha := hex.EncodeToString(h.Sum(nil))
-
-	if sha != mac {
-		log.Println("HMAC mismatch")
-		return
-	}
-
-	if expiry < time.Now().Unix() {
-		log.Println("Session expired")
-		return
-	}
-
-	mctx, mcancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer mcancel()
-	client, err := mongo.Connect(mctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
+	priv, err := getPrivateKey(h, mac, expiry, keyID)
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		return
-	}
-
-	// Check the connection
-	err = client.Ping(context.TODO(), nil)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println("Connected to MongoDB!")
-	collection := client.Database("mist2").Collection("keys")
-	//objID, err := primitive.ObjectIDFromHex(keyID)
-	//if err != nil {
-	//	log.Println(keyID)
-	//	log.Fatal(err)
-	//}
-
-	key := Key{}
-
-	findResult := collection.FindOne(mctx, bson.M{"_id": keyID})
-	if err := findResult.Err(); err != nil {
-		log.Println(keyID)
-		log.Fatal(err)
-	}
-	err = findResult.Decode(&key)
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	proxySplit := strings.Split(proxy, "@")
 	username := proxySplit[0]
 	hostAndPort := proxySplit[1]
 
-	signer, err := ssh.ParsePrivateKey([]byte(key.Private))
-	if err != nil {
-		panic("Failed to parse private key: " + err.Error())
-	}
-
 	config := &ssh.ClientConfig{
 		User: username,
 		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
+			priv,
 		},
 		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
 	}
 
 	connSSH, err := ssh.Dial("tcp", hostAndPort, config)
 	if err != nil {
-		panic("Failed to dial: " + err.Error())
+		log.Println("Failed to dial: " + err.Error())
+		return
 	}
 	defer connSSH.Close()
 
@@ -217,21 +224,28 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	// represented by a Session.
 	session, err := connSSH.NewSession()
 	if err != nil {
-		panic("Failed to create session: " + err.Error())
+		log.Println("Failed to create session: " + err.Error())
+		return
 	}
 	defer session.Close()
 
 	remoteStdin, err := session.StdinPipe()
 	if err != nil {
-		panic("Failed to create stdinpipe: " + err.Error())
+		log.Println("Failed to create stdinpipe: " + err.Error())
+		return
 	}
 	remoteStdout, err := session.StdoutPipe()
 	if err != nil {
-		panic("Failed to create stdoutpipe: " + err.Error())
+		log.Println("Failed to create stdoutpipe: " + err.Error())
+		return
 	}
 	remoteStdout = NewCancelableReader(ctx, remoteStdout)
 
-	startSSH(hostAndPort, username, key.Private, session)
+	err = startSSH(session)
+	if err != nil {
+		log.Println(err)
+		return
+	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -257,7 +271,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		//defer func() { fmt.Println("reader done") }()
 		conn.SetReadDeadline(time.Now().Add(pongWait))
 		conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
 		for {
@@ -276,7 +289,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if mt != websocket.BinaryMessage {
-				log.Fatal("blah")
+				log.Println("Non binary message")
 				return
 			}
 
@@ -290,7 +303,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		//defer func() { fmt.Println("ping done") }()
 		ticker := time.NewTicker(pingPeriod)
 		defer ticker.Stop()
 		for {
@@ -309,7 +321,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		//defer func() { fmt.Println("writer done") }()
 		// server -> websocket
 		// TODO: NextWriter() seems to be broken.
 		if err := huproxy.File2WS(ctx, cancel, remoteStdout, conn); err == io.EOF {
@@ -325,7 +336,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	wg.Wait()
-	fmt.Println("SSH connection finished")
+	log.Println("SSH connection finished")
 }
 
 func handleVNC(w http.ResponseWriter, r *http.Request) {
@@ -346,64 +357,17 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	// Write Data to it
 	h.Write([]byte(proxy + "," + keyID + "," + host + "," + port + "," + vars["expiry"]))
 
-	// Get result and encode as hexadecimal string
-	sha := hex.EncodeToString(h.Sum(nil))
-
-	if sha != mac {
-		log.Println("HMAC mismatch")
+	priv, err := getPrivateKey(h, mac, expiry, keyID)
+	if err != nil {
+		log.Println(err)
 		return
-	}
-
-	if expiry < time.Now().Unix() {
-		log.Println("Session expired")
-		return
-	}
-
-	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	client, err := mongo.Connect(mctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
-	if err != nil {
-		log.Fatal(err)
-		return
-	}
-
-	// Check the connection
-	err = client.Ping(context.TODO(), nil)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println("Connected to MongoDB!")
-	collection := client.Database("mist2").Collection("keys")
-	//objID, err := primitive.ObjectIDFromHex(keyID)
-	//if err != nil {
-	//	log.Println(keyID)
-	//	log.Fatal(err)
-	//}
-
-	key := Key{}
-
-	findResult := collection.FindOne(mctx, bson.M{"_id": keyID})
-	if err := findResult.Err(); err != nil {
-		log.Println(keyID)
-		log.Fatal(err)
-	}
-	err = findResult.Decode(&key)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	priv, err := ssh.ParsePrivateKey([]byte(key.Private))
-	if err != nil {
-		log.Fatal(err)
 	}
 	// Setup the tunnel, but do not yet start it yet.
 	tunnel := sshtunnel.NewSSHTunnel(
 		// User and host of tunnel server, it will default to port 22
 		// if not specified.
 		proxy,
-		ssh.PublicKeys(priv), // 1. private key
+		priv, // 1. private key
 		host+":"+port,
 		"0",
 	)
@@ -437,18 +401,23 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 				websocket.CloseNormalClosure,   // Normal.
 				websocket.CloseAbnormalClosure, // OpenSSH killed proxy client.
 			) {
+				cancel()
 				return
 			}
 			if err != nil {
 				log.Printf("nextreader: %v", err)
+				cancel()
 				return
 			}
 			if mt != websocket.BinaryMessage {
-				log.Fatal("blah")
+				log.Printf("Non binary message")
+				cancel()
+				return
 			}
 			if _, err := io.Copy(s, r); err != nil {
 				log.Printf("Reading from websocket: %v", err)
 				cancel()
+				return
 			}
 		}
 	}()
