@@ -47,6 +47,9 @@ var (
 	dialTimeout      = flag.Duration("dial_timeout", 10*time.Second, "Dial timeout.")
 	handshakeTimeout = flag.Duration("handshake_timeout", 10*time.Second, "Handshake timeout.")
 	writeTimeout     = flag.Duration("write_timeout", 10*time.Second, "Write timeout.")
+	pongTimeout      = flag.Duration("pong_timeout", 10*time.Second, "Pong message timeout.")
+	// Send pings to peer with this period. Must be less than pongTimeout.
+	pingPeriod = (*pongTimeout * 9) / 10
 
 	upgrader websocket.Upgrader
 )
@@ -255,15 +258,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 
 	defer conn.Close()
 
-	// Time allowed to write a message to the peer.
-	writeWait := 2 * time.Second
-
-	// Time allowed to read the next pong message from the peer.
-	pongWait := 10 * time.Second
-
-	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod := (pongWait * 9) / 10
-
 	var wg sync.WaitGroup
 	wg.Add(3)
 
@@ -271,8 +265,8 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		conn.SetReadDeadline(time.Now().Add(pongWait))
-		conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+		conn.SetReadDeadline(time.Now().Add(*pongTimeout))
+		conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 		for {
 			mt, r, err := conn.NextReader()
 			if ctx.Err() != nil {
@@ -308,7 +302,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(writeWait)); err != nil {
+				if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(*writeTimeout)); err != nil {
 					log.Println("ping:", err)
 					return
 				}
