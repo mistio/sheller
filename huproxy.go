@@ -28,7 +28,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -254,7 +253,9 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	vars := mux.Vars(r)
-	proxy := vars["proxy"]
+	user := vars["user"]
+	host := vars["host"]
+	port := vars["port"]
 	keyID := vars["key"]
 	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
 	mac := vars["mac"]
@@ -263,7 +264,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
 
 	// Write Data to it
-	h.Write([]byte(proxy + "," + keyID + "," + vars["expiry"]))
+	h.Write([]byte(user + "," + host + "," + port + "," + keyID + "," + vars["expiry"]))
 
 	// Get result and encode as hexadecimal string
 	priv, err := getPrivateKey(h, mac, expiry, keyID)
@@ -272,19 +273,15 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxySplit := strings.Split(proxy, "@")
-	username := proxySplit[0]
-	hostAndPort := proxySplit[1]
-
 	config := &ssh.ClientConfig{
-		User: username,
+		User: user,
 		Auth: []ssh.AuthMethod{
 			priv,
 		},
 		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
 	}
 
-	connSSH, err := ssh.Dial("tcp", hostAndPort, config)
+	connSSH, err := ssh.Dial("tcp", host + ":" + port, config)
 	if err != nil {
 		log.Println("Failed to dial: " + err.Error())
 		return
@@ -416,7 +413,7 @@ func main() {
 
 	log.Printf("huproxy %s", huproxy.Version)
 	m := mux.NewRouter()
-	m.HandleFunc("/proxy/{proxy}/{key}/{expiry}/{mac}", handleSSH)
+	m.HandleFunc("/ssh/{user}/{host}/{port}/{key}/{expiry}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{key}/{host}/{port}/{expiry}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,
