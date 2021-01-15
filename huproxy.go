@@ -18,7 +18,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"flag"
+	"fmt"
+	"hash"
 	"io"
 	"log"
 	"net"
@@ -26,11 +29,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 	"sync"
-	"hash"
-	"errors"
-	"fmt"
+	"time"
 
 	"github.com/elliotchance/sshtunnel"
 	huproxy "github.com/google/huproxy/lib"
@@ -53,6 +53,19 @@ var (
 
 	upgrader websocket.Upgrader
 )
+
+// Key model
+type Key struct {
+	ID        string `bson:"_id, omitempty"`
+	Class     string `bson:"_cls"`
+	Name      string `bson:"name" json:"name"`
+	Owner     string `bson:"owner" json:"owner"`
+	Default   bool   `bson:"default" json:"default"`
+	Public    string `bson:"public" json:"public"`
+	Private   string `bson:"private" json:"private"`
+	OwnedBy   string `bson:"owned_by" json:"owned_by"`
+	CreatedBy string `bson:"created_by" json:"created_by"`
+}
 
 type CancelableReader struct {
 	ctx  context.Context
@@ -168,17 +181,72 @@ func startSSH(session *ssh.Session) error {
 	return nil
 }
 
-// Key model
-type Key struct {
-	ID        string `bson:"_id, omitempty"`
-	Class     string `bson:"_cls"`
-	Name      string `bson:"name" json:"name"`
-	Owner     string `bson:"owner" json:"owner"`
-	Default   bool   `bson:"default" json:"default"`
-	Public    string `bson:"public" json:"public"`
-	Private   string `bson:"private" json:"private"`
-	OwnedBy   string `bson:"owned_by" json:"owned_by"`
-	CreatedBy string `bson:"created_by" json:"created_by"`
+func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer cancel()
+	ticker := time.NewTicker(pingPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(*writeTimeout)); err != nil {
+				log.Println("ping:", err)
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer) {
+	defer wg.Done()
+	defer cancel()
+	// websocket -> server
+	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	for {
+		mt, r, err := conn.NextReader()
+		if ctx.Err() != nil {
+			return
+		}
+		if websocket.IsCloseError(err,
+			websocket.CloseNormalClosure,   // Normal.
+			websocket.CloseAbnormalClosure, // OpenSSH killed proxy client.
+		) {
+			return
+		}
+		if err != nil {
+			log.Printf("nextreader: %v", err)
+			return
+		}
+		if mt != websocket.BinaryMessage {
+			log.Println("Non binary message")
+			return
+		}
+
+		if _, err := io.Copy(writer, r); err != nil {
+			log.Printf("Reading from websocket: %v", err)
+			return
+		}
+	}
+}
+
+func hostToClient(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader) {
+	defer wg.Done()
+	defer cancel()
+	// server -> websocket
+	// TODO: NextWriter() seems to be broken.
+	if err := huproxy.File2WS(ctx, cancel, reader, conn); err == io.EOF {
+		if err := conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
+		} else if err != nil {
+			log.Printf("Error sending close message: %v", err)
+		}
+	} else if err != nil {
+		log.Printf("Reading from file: %v", err)
+	}
 }
 
 func handleSSH(w http.ResponseWriter, r *http.Request) {
@@ -261,73 +329,9 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	wg.Add(3)
 
-	// websocket -> server
-	go func() {
-		defer wg.Done()
-		defer cancel()
-		conn.SetReadDeadline(time.Now().Add(*pongTimeout))
-		conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
-		for {
-			mt, r, err := conn.NextReader()
-			if ctx.Err() != nil {
-				return
-			}
-			if websocket.IsCloseError(err,
-				websocket.CloseNormalClosure,   // Normal.
-				websocket.CloseAbnormalClosure, // OpenSSH killed proxy client.
-			) {
-				return
-			}
-			if err != nil {
-				log.Printf("nextreader: %v", err)
-				return
-			}
-			if mt != websocket.BinaryMessage {
-				log.Println("Non binary message")
-				return
-			}
-
-			if _, err := io.Copy(remoteStdin, r); err != nil {
-				log.Printf("Reading from websocket: %v", err)
-				return
-			}
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		defer cancel()
-		ticker := time.NewTicker(pingPeriod)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(*writeTimeout)); err != nil {
-					log.Println("ping:", err)
-					return
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		defer cancel()
-		// server -> websocket
-		// TODO: NextWriter() seems to be broken.
-		if err := huproxy.File2WS(ctx, cancel, remoteStdout, conn); err == io.EOF {
-			if err := conn.WriteControl(websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
-			} else if err != nil {
-				log.Printf("Error sending close message: %v", err)
-			}
-		} else if err != nil {
-			log.Printf("Reading from file: %v", err)
-		}
-	}()
+	go clientToHost(ctx, cancel, conn, &wg, remoteStdin)
+	go hostToClient(ctx, cancel, conn, &wg, remoteStdout)
+	go pingWebsocket(ctx, cancel, conn, &wg)
 
 	wg.Wait()
 	log.Println("SSH connection finished")
@@ -387,47 +391,15 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// websocket -> server
-	go func() {
-		for {
-			mt, r, err := conn.NextReader()
-			if websocket.IsCloseError(err,
-				websocket.CloseNormalClosure,   // Normal.
-				websocket.CloseAbnormalClosure, // OpenSSH killed proxy client.
-			) {
-				cancel()
-				return
-			}
-			if err != nil {
-				log.Printf("nextreader: %v", err)
-				cancel()
-				return
-			}
-			if mt != websocket.BinaryMessage {
-				log.Printf("Non binary message")
-				cancel()
-				return
-			}
-			if _, err := io.Copy(s, r); err != nil {
-				log.Printf("Reading from websocket: %v", err)
-				cancel()
-				return
-			}
-		}
-	}()
+	var wg sync.WaitGroup
+	wg.Add(3)
 
-	// server -> websocket
-	// TODO: NextWriter() seems to be broken.
-	if err := huproxy.File2WS(ctx, cancel, s, conn); err == io.EOF {
-		if err := conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-			time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
-		} else if err != nil {
-			log.Printf("Error sending close message: %v", err)
-		}
-	} else if err != nil {
-		log.Printf("Reading from file: %v", err)
-	}
+	go clientToHost(ctx, cancel, conn, &wg, s)
+	go hostToClient(ctx, cancel, conn, &wg, s)
+	go pingWebsocket(ctx, cancel, conn, &wg)
+
+	wg.Wait()
+	log.Println("VNC connection finished")
 }
 
 func main() {
