@@ -168,7 +168,7 @@ func startSSH(session *ssh.Session) error {
 	}
 
 	// Request pseudo terminal
-	if err := session.RequestPty("xterm", 80, 40, modes); err != nil {
+	if err := session.RequestPty("xterm-256color", 80, 40, modes); err != nil {
 		return fmt.Errorf("request for pseudo terminal failed: %s", err)
 	}
 
