@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -125,7 +126,11 @@ func getPrivateKey(h hash.Hash, mac string, expiry int64, keyID string) (ssh.Aut
 
 	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err := mongo.Connect(mctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
+	mongoURI := os.Getenv("MONGO_URI")
+	if !strings.HasPrefix(mongoURI, "mongodb://") {
+		mongoURI = "mongodb://" + mongoURI
+	}
+	client, err := mongo.Connect(mctx, options.Client().ApplyURI(mongoURI))
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +286,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
 	}
 
-	connSSH, err := ssh.Dial("tcp", host + ":" + port, config)
+	connSSH, err := ssh.Dial("tcp", host+":"+port, config)
 	if err != nil {
 		log.Println("Failed to dial: " + err.Error())
 		return
