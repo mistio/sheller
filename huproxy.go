@@ -238,7 +238,7 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 	for {
 		r, err := getNextReader(ctx, conn)
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
 			return
 		}
 		if r == nil {
@@ -262,7 +262,8 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 			resizeMessage := terminalSize{}
 			err := decoder.Decode(&resizeMessage)
 			if err != nil {
-				fmt.Println(err)
+				log.Println(err)
+				return
 			}
 			session.WindowChange(resizeMessage.Height, resizeMessage.Width)
 		}
@@ -278,7 +279,7 @@ func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	for {
 		r, err := getNextReader(ctx, conn)
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
 			return
 		}
 		if r == nil {
