@@ -18,6 +18,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -65,6 +66,11 @@ type Key struct {
 	Private   string `bson:"private" json:"private"`
 	OwnedBy   string `bson:"owned_by" json:"owned_by"`
 	CreatedBy string `bson:"created_by" json:"created_by"`
+}
+
+type terminalSize struct {
+	Height int `json:"height"`
+	Width int `json:"width"`
 }
 
 type CancelableReader struct {
@@ -203,6 +209,67 @@ func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websock
 	}
 }
 
+func getNextReader(ctx context.Context, conn *websocket.Conn) (io.Reader, error) {
+	mt, r, err := conn.NextReader()
+	if ctx.Err() != nil {
+		return nil, nil
+	}
+	if websocket.IsCloseError(err,
+		websocket.CloseNormalClosure,   // Normal.
+		websocket.CloseAbnormalClosure, // OpenSSH killed proxy client.
+	) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("nextreader: %v", err)
+	}
+	if mt != websocket.BinaryMessage {
+		return nil, fmt.Errorf("Non binary message")
+	}
+	return r, nil
+}
+
+func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer, session *ssh.Session) {
+	defer wg.Done()
+	defer cancel()
+	// websocket -> server
+	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	for {
+		r, err := getNextReader(ctx, conn)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		if r == nil {
+			return
+		}
+		dataTypeBuf := make([]byte, 1)
+		readBytes, err := r.Read(dataTypeBuf)
+		if readBytes != 1 {
+			log.Println("Unexpected number of bytes read")
+			return
+		}
+
+		switch dataTypeBuf[0] {
+		case 0:
+			if _, err := io.Copy(writer, r); err != nil {
+				log.Printf("Reading from websocket: %v", err)
+				return
+			}
+		case 1:
+			decoder := json.NewDecoder(r)
+			resizeMessage := terminalSize{}
+			err := decoder.Decode(&resizeMessage)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			session.WindowChange(resizeMessage.Height, resizeMessage.Width)
+		}
+	}
+}
+
 func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer) {
 	defer wg.Done()
 	defer cancel()
@@ -210,22 +277,12 @@ func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		mt, r, err := conn.NextReader()
-		if ctx.Err() != nil {
-			return
-		}
-		if websocket.IsCloseError(err,
-			websocket.CloseNormalClosure,   // Normal.
-			websocket.CloseAbnormalClosure, // OpenSSH killed proxy client.
-		) {
-			return
-		}
+		r, err := getNextReader(ctx, conn)
 		if err != nil {
-			log.Printf("nextreader: %v", err)
+			log.Println(err)
 			return
 		}
-		if mt != websocket.BinaryMessage {
-			log.Println("Non binary message")
+		if r == nil {
 			return
 		}
 
@@ -331,7 +388,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	wg.Add(3)
 
-	go clientToHost(ctx, cancel, conn, &wg, remoteStdin)
+	go clientToHostSSH(ctx, cancel, conn, &wg, remoteStdin, session)
 	go hostToClient(ctx, cancel, conn, &wg, remoteStdout)
 	go pingWebsocket(ctx, cancel, conn, &wg)
 
