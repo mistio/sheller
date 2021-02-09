@@ -70,18 +70,18 @@ type Key struct {
 }
 
 type KeyMachineAssociation struct {
-	ID        primitive.ObjectID `bson:"_id, omitempty"`
-	Class     string `bson:"_cls"`
-	Key   	  string `bson:"key" json:"key"`
-	LastUsed  int    `bson:"last_used" json:"last_used"`
-	SSHUser   string `bson:"ssh_user" json:"ssh_user"`
-	Sudo      bool   `bson:"sudo" json:"sudo"`
-	Port      int    `bson:"port" json:"port"`
+	ID       primitive.ObjectID `bson:"_id, omitempty"`
+	Class    string             `bson:"_cls"`
+	Key      string             `bson:"key" json:"key"`
+	LastUsed int                `bson:"last_used" json:"last_used"`
+	SSHUser  string             `bson:"ssh_user" json:"ssh_user"`
+	Sudo     bool               `bson:"sudo" json:"sudo"`
+	Port     int                `bson:"port" json:"port"`
 }
 
 type terminalSize struct {
 	Height int `json:"height"`
-	Width int `json:"width"`
+	Width  int `json:"width"`
 }
 
 type CancelableReader struct {
@@ -181,26 +181,30 @@ func getPrivateKey(h hash.Hash, mac string, expiry int64, keyID string) (ssh.Aut
 	return ssh.PublicKeys(priv), nil
 }
 
-func getKeyMachineAssociation(keyMachineAssociationID string) (*KeyMachineAssociation, error) {
-	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+func mongoClient() (*mongo.Client, error) {
 	mongoURI := os.Getenv("MONGO_URI")
 	if !strings.HasPrefix(mongoURI, "mongodb://") {
 		mongoURI = "mongodb://" + mongoURI
 	}
-	client, err := mongo.Connect(mctx, options.Client().ApplyURI(mongoURI))
+	client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(mongoURI))
 	if err != nil {
 		return nil, err
 	}
 
 	// Check the connection
 	err = client.Ping(context.TODO(), nil)
-
 	if err != nil {
 		return nil, err
 	}
-
 	log.Println("Connected to MongoDB!")
+
+	return client, nil
+}
+
+func getKeyMachineAssociation(client *mongo.Client, keyMachineAssociationID string) (*KeyMachineAssociation, error) {
+	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	collection := client.Database("mist2").Collection("key_association")
 
 	docID, _ := primitive.ObjectIDFromHex(keyMachineAssociationID)
@@ -211,33 +215,17 @@ func getKeyMachineAssociation(keyMachineAssociationID string) (*KeyMachineAssoci
 		return nil, err
 	}
 
-	err = findResult.Decode(keyMachineAssociation)
+	err := findResult.Decode(keyMachineAssociation)
 	if err != nil {
 		return nil, err
 	}
 	return keyMachineAssociation, nil
 }
 
-func getKey(keyID string) (*Key, error) {
+func getKey(client *mongo.Client, keyID string) (*Key, error) {
 	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	mongoURI := os.Getenv("MONGO_URI")
-	if !strings.HasPrefix(mongoURI, "mongodb://") {
-		mongoURI = "mongodb://" + mongoURI
-	}
-	client, err := mongo.Connect(mctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, err
-	}
 
-	// Check the connection
-	err = client.Ping(context.TODO(), nil)
-
-	if err != nil {
-		return nil, err
-	}
-
-	log.Println("Connected to MongoDB!")
 	collection := client.Database("mist2").Collection("keys")
 
 	key := &Key{}
@@ -246,7 +234,7 @@ func getKey(keyID string) (*Key, error) {
 	if err := findResult.Err(); err != nil {
 		return nil, err
 	}
-	err = findResult.Decode(key)
+	err := findResult.Decode(key)
 	if err != nil {
 		return nil, err
 	}
@@ -265,12 +253,17 @@ func getPrivateKeyFromKeyMachineAssociation(h hash.Hash, mac string, expiry int6
 		return nil, errors.New("Session expired")
 	}
 
-	keyMachineAssociation, err := getKeyMachineAssociation(keyMachineAssociationID)
+	client, err := mongoClient()
 	if err != nil {
 		return nil, err
 	}
 
-	key, err := getKey(keyMachineAssociation.Key)
+	keyMachineAssociation, err := getKeyMachineAssociation(client, keyMachineAssociationID)
+	if err != nil {
+		return nil, err
+	}
+
+	key, err := getKey(client, keyMachineAssociation.Key)
 	if err != nil {
 		return nil, err
 	}
