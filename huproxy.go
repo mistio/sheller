@@ -241,7 +241,25 @@ func getKey(client *mongo.Client, keyID string) (*Key, error) {
 	return key, nil
 }
 
-func getPrivateKeyFromKeyMachineAssociation(h hash.Hash, mac string, expiry int64, keyMachineAssociationID string) (ssh.AuthMethod, error) {
+func saveFailedAttemptKeyMachineAssociation(client *mongo.Client, keyMachineAssociationID string) error {
+	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	docID, err := primitive.ObjectIDFromHex(keyMachineAssociationID)
+	if err != nil {
+		return err
+	}
+
+	collection := client.Database("mist2").Collection("key_association")
+
+	_, err = collection.UpdateOne(mctx, bson.M{"_id": docID}, bson.M{"$set": bson.M{"last_used": -1}})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func getPrivateKeyFromKeyMachineAssociation(client *mongo.Client, h hash.Hash, mac string, expiry int64, keyMachineAssociationID string) (ssh.AuthMethod, error) {
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
 
@@ -251,11 +269,6 @@ func getPrivateKeyFromKeyMachineAssociation(h hash.Hash, mac string, expiry int6
 
 	if expiry < time.Now().Unix() {
 		return nil, errors.New("Session expired")
-	}
-
-	client, err := mongoClient()
-	if err != nil {
-		return nil, err
 	}
 
 	keyMachineAssociation, err := getKeyMachineAssociation(client, keyMachineAssociationID)
@@ -424,7 +437,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	user := vars["user"]
 	host := vars["host"]
 	port := vars["port"]
-	keyID := vars["key"]
+	keyMachineAssociationID := vars["key"]
 	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
 	mac := vars["mac"]
 
@@ -432,10 +445,16 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
 
 	// Write Data to it
-	h.Write([]byte(user + "," + host + "," + port + "," + keyID + "," + vars["expiry"]))
+	h.Write([]byte(user + "," + host + "," + port + "," + keyMachineAssociationID + "," + vars["expiry"]))
+
+	client, err := mongoClient()
+	if err != nil {
+		log.Println(err)
+		return
+	}
 
 	// Get result and encode as hexadecimal string
-	priv, err := getPrivateKeyFromKeyMachineAssociation(h, mac, expiry, keyID)
+	priv, err := getPrivateKeyFromKeyMachineAssociation(client, h, mac, expiry, keyMachineAssociationID)
 	if err != nil {
 		log.Println(err)
 		return
@@ -452,6 +471,10 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	connSSH, err := ssh.Dial("tcp", host+":"+port, config)
 	if err != nil {
 		log.Println("Failed to dial: " + err.Error())
+		err := saveFailedAttemptKeyMachineAssociation(client, keyMachineAssociationID)
+		if err != nil {
+			log.Println("Failed to save failed attempt on KeyMachineAssociation: " + err.Error())
+		}
 		return
 	}
 	defer connSSH.Close()
