@@ -57,7 +57,7 @@ stages:
     - builder
   dependencies: []
 
-build_gocky_image:
+build_huproxy_image:
   <<: *docker_build_template
   script:
     - docker build --rm -t gcr.io/mist-ops/huproxy:$CI_COMMIT_SHA .
