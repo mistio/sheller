@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -64,9 +65,14 @@ type Key struct {
 	Owner     string `bson:"owner" json:"owner"`
 	Default   bool   `bson:"default" json:"default"`
 	Public    string `bson:"public" json:"public"`
-	Private   string `bson:"private" json:"private"`
 	OwnedBy   string `bson:"owned_by" json:"owned_by"`
 	CreatedBy string `bson:"created_by" json:"created_by"`
+}
+
+// Portal model
+type Portal struct {
+	ID             string `bson:"_id, omitempty"`
+	InternalApiKey string `bson:"internal_api_key, omitempty"`
 }
 
 type KeyMachineAssociation struct {
@@ -129,7 +135,7 @@ func NewCancelableReader(ctx context.Context, r io.Reader) *CancelableReader {
 	return c
 }
 
-func getPrivateKey(h hash.Hash, mac string, expiry int64, keyID string) (ssh.AuthMethod, error) {
+func getPrivateKey(h hash.Hash, mac string, expiry int64, keyID string, sessionCookie string) (ssh.AuthMethod, error) {
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
 
@@ -172,8 +178,44 @@ func getPrivateKey(h hash.Hash, mac string, expiry int64, keyID string) (ssh.Aut
 	if err != nil {
 		return nil, err
 	}
+	log.Println("Fetching API key")
+	apikey, err := getApiKey(client)
 
-	priv, err := ssh.ParsePrivateKey([]byte(key.Private))
+	internalApiUrl := os.Getenv("INTERNAL_API_URL")
+	if len(internalApiUrl) == 0 {
+		internalApiUrl = "http://api"
+	}
+	url := internalApiUrl + "/api/v1/keys/" + key.ID + "/private"
+
+	mistApiClient := http.Client{
+		Timeout: time.Second * 20,
+	}
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	req.Header.Set("Authorization", "internal "+apikey+" "+sessionCookie)
+
+	res, getErr := mistApiClient.Do(req)
+	if getErr != nil {
+		log.Fatal(getErr)
+	}
+
+	if res.Body != nil {
+		defer res.Body.Close()
+	}
+
+	body, readErr := ioutil.ReadAll(res.Body)
+	if readErr != nil {
+		log.Fatal(readErr)
+	}
+
+	keyBody := fmt.Sprintf("%s", body)
+	keyBody = strings.Replace(keyBody, `\n`, "\n", -1)
+	keyBody = strings.Replace(keyBody, `"`, "", -1)
+	priv, err := ssh.ParsePrivateKey([]byte(keyBody))
 	if err != nil {
 		return nil, err
 	}
@@ -241,6 +283,26 @@ func getKey(client *mongo.Client, keyID string) (*Key, error) {
 	return key, nil
 }
 
+func getApiKey(client *mongo.Client) (string, error) {
+	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	log.Println(("Getting portal from db"))
+	collection := client.Database("mist2").Collection("portal")
+
+	portal := &Portal{}
+
+	findResult := collection.FindOne(mctx, bson.M{})
+	if err := findResult.Err(); err != nil {
+		return "", err
+	}
+	log.Println(("Decoding portal"))
+	err := findResult.Decode(portal)
+	if err != nil {
+		return "", err
+	}
+	return portal.InternalApiKey, nil
+}
+
 func saveFailedAttemptKeyMachineAssociation(client *mongo.Client, keyMachineAssociationID string) error {
 	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -259,7 +321,7 @@ func saveFailedAttemptKeyMachineAssociation(client *mongo.Client, keyMachineAsso
 	return nil
 }
 
-func getPrivateKeyFromKeyMachineAssociation(client *mongo.Client, h hash.Hash, mac string, expiry int64, keyMachineAssociationID string) (ssh.AuthMethod, error) {
+func getPrivateKeyFromKeyMachineAssociation(client *mongo.Client, h hash.Hash, mac string, expiry int64, keyMachineAssociationID string, sessionCookie string) (ssh.AuthMethod, error) {
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
 
@@ -280,8 +342,45 @@ func getPrivateKeyFromKeyMachineAssociation(client *mongo.Client, h hash.Hash, m
 	if err != nil {
 		return nil, err
 	}
+	log.Println("Fetching API key")
+	apikey, err := getApiKey(client)
 
-	priv, err := ssh.ParsePrivateKey([]byte(key.Private))
+	internalApiUrl := os.Getenv("INTERNAL_API_URL")
+	if len(internalApiUrl) == 0 {
+		internalApiUrl = "http://api"
+	}
+	url := internalApiUrl + "/api/v1/keys/" + key.ID + "/private"
+
+	mistApiClient := http.Client{
+		Timeout: time.Second * 20,
+	}
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	req.Header.Set("Authorization", "internal "+apikey+" "+sessionCookie)
+
+	res, getErr := mistApiClient.Do(req)
+	if getErr != nil {
+		log.Fatal(getErr)
+	}
+
+	if res.Body != nil {
+		defer res.Body.Close()
+	}
+
+	body, readErr := ioutil.ReadAll(res.Body)
+	if readErr != nil {
+		log.Fatal(readErr)
+	}
+
+	// keyBody := string(body)
+	keyBody := fmt.Sprintf("%s", body)
+	keyBody = strings.Replace(keyBody, `\n`, "\n", -1)
+	keyBody = strings.Replace(keyBody, `"`, "", -1)
+	priv, err := ssh.ParsePrivateKey([]byte(keyBody))
 	if err != nil {
 		return nil, err
 	}
@@ -453,8 +552,15 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sessionCookie, err := r.Cookie("session.id")
+	if err != nil {
+		fmt.Println(err.Error())
+	} else {
+		fmt.Println(sessionCookie.Value)
+	}
+
 	// Get result and encode as hexadecimal string
-	priv, err := getPrivateKeyFromKeyMachineAssociation(client, h, mac, expiry, keyMachineAssociationID)
+	priv, err := getPrivateKeyFromKeyMachineAssociation(client, h, mac, expiry, keyMachineAssociationID, sessionCookie.Value)
 	if err != nil {
 		log.Println(err)
 		return
@@ -543,7 +649,15 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	// Write Data to it
 	h.Write([]byte(proxy + "," + keyID + "," + host + "," + port + "," + vars["expiry"]))
 
-	priv, err := getPrivateKey(h, mac, expiry, keyID)
+	sessionCookie, err := r.Cookie("session.id")
+	if err != nil {
+		fmt.Println(err.Error())
+	} else {
+		fmt.Println(sessionCookie.Value)
+	}
+
+	// Get result and encode as hexadecimal string
+	priv, err := getPrivateKey(h, mac, expiry, keyID, sessionCookie.Value)
 	if err != nil {
 		log.Println(err)
 		return
