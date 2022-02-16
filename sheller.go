@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -29,6 +30,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +46,11 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/crypto/ssh"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/homedir"
 )
 
 var (
@@ -54,9 +61,17 @@ var (
 	pongTimeout      = flag.Duration("pong_timeout", 10*time.Second, "Pong message timeout.")
 	// Send pings to peer with this period. Must be less than pongTimeout.
 	pingPeriod = (*pongTimeout * 9) / 10
-
-	upgrader websocket.Upgrader
+	kubeconfig string
+	upgrader   websocket.Upgrader
+	cacheBuff  bytes.Buffer
 )
+
+type TTYSize struct {
+	Cols uint16 `json:"cols"`
+	Rows uint16 `json:"rows"`
+	X    uint16 `json:"x"`
+	Y    uint16 `json:"y"`
+}
 
 // Key model
 type Key struct {
@@ -529,10 +544,27 @@ func hostToClient(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	}
 }
 
+func parseKubeConfig() {
+	if home := homedir.HomeDir(); home != "" {
+		flag.StringVar(&kubeconfig, "kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+	} else {
+		flag.StringVar(&kubeconfig, "kubeconfig", "~/.kube/config", "absolute path to the kubeconfig file")
+	}
+	flag.Parse()
+
+}
+
+func checkifPodExists(client *kubernetes.Clientset, opts *ExecOptions) error {
+	pod, err := client.CoreV1().Pods(opts.Namespace).Get(context.TODO(), opts.Pod, metav1.GetOptions{})
+	if pod.Status.Phase == "Running" {
+		return nil
+	}
+	return err
+}
+
 func handleSSH(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-
 	vars := mux.Vars(r)
 	user := vars["user"]
 	host := vars["host"]
@@ -704,7 +736,145 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 	log.Println("VNC connection finished")
 }
+func handleExec(w http.ResponseWriter, r *http.Request) {
+	cacheBuff.Write([]byte{0})
+	canWrite := true
+	vars := mux.Vars(r)
+	container := vars["machine"]
+	opts := &ExecOptions{
+		Namespace: "default",
+		Pod:       "nginx",
+		Container: container,
+		Command:   []string{"/bin/bash"},
+		Stdin:     true,
+		TTY:       true,
+	}
+	parseKubeConfig()
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	clientSet, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
+	err = checkifPodExists(clientSet, opts)
+	if err != nil {
+		panic(err.Error())
+	}
+	req, err := ExecRequest(config, opts)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	tlsConfig, err := rest.TLSConfigFor(config)
+	dialer := &websocket.Dialer{
+		TLSClientConfig: tlsConfig,
+		Subprotocols:    KubeProtocols,
+	}
+	connection, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Print(err)
+	}
+	conn_pod, _, err := dialer.Dial(req.URL.String(), req.Header)
+	if err != nil {
+		fmt.Print(err)
+	}
+	defer conn_pod.Close()
 
+	errChan := make(chan error, 3)
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	// add color to the output
+	shell_default := "\033[1m\033[01;94mmist.io@sheller[" + "\033[01;35mPod\033[1m\033[01;94m \033[01;32m" + opts.Container + "\033[1m\033[01;94m]:~$ \033[01;37m"
+	connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
+
+	go func() {
+		defer wg.Done()
+		for {
+			_, data, err := connection.ReadMessage()
+			if err != nil {
+				wg.Done()
+			}
+			if strings.Contains(string(data), "{\"cols\"") {
+				data = []byte{}
+			}
+			if err != nil {
+				fmt.Print("Error reading from xterm.js", err)
+			}
+			dataLength := len(data)
+			dataBuffer := bytes.Trim(data, "\n\r\t")
+			if bytes.Contains(dataBuffer, []byte{127}) {
+				connection.WriteMessage(websocket.TextMessage, []byte{127, 8, 32, 8})
+			}
+			if bytes.Contains(dataBuffer, []byte{3}) {
+				canWrite = true
+				connection.WriteMessage(websocket.BinaryMessage, []byte{10, 13})
+				connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
+				continue
+			}
+			fmt.Printf("received message of size %d byte(s) from xterm.js\n", dataLength)
+			if dataLength == -1 { // invalid
+				fmt.Printf("failed to get the correct number of bytes read, ignoring message")
+				continue
+			}
+			if string(data) == "\r" {
+
+				fmt.Printf("received carriage return from terminal\n")
+				cacheBuff.Write([]byte{10})
+				result := cacheBuff.Bytes()
+				// entoli : [0,12,13,10]
+				// apotelesma entolis : [1,12,13,10 ... 123 ,12, 14]
+				if err := conn_pod.WriteMessage(websocket.BinaryMessage, result); err != nil {
+					fmt.Print("Error sending command to pod:", err)
+				}
+				connection.WriteMessage(websocket.BinaryMessage, []byte{13})
+				canWrite = false
+
+			}
+			if canWrite == true && string(data) != "\r" {
+				cacheBuff.Write(dataBuffer)
+				connection.WriteMessage(websocket.BinaryMessage, dataBuffer)
+				if err != nil {
+					fmt.Printf("failed to write %v bytes to tty: %s", len(dataBuffer), err)
+
+				}
+			}
+
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+
+			_, buf, err := conn_pod.ReadMessage()
+			if err != nil {
+				fmt.Print("Error receiving command output from pod: ", err)
+				wg.Done()
+			}
+			// append shell_default to buf
+
+			if len(buf) > 3 && buf[0] == 1 {
+				result := buf[len(cacheBuff.Bytes()):]
+				result = bytes.Replace(result, []byte{35, 32}, []byte{}, 1)
+				connection.WriteMessage(websocket.TextMessage, result)
+				if canWrite == true {
+					//connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
+				}
+				cacheBuff.Reset()
+				cacheBuff.Write([]byte{0})
+				canWrite = true
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(errChan)
+	error_shell := <-errChan
+	fmt.Print(error_shell)
+
+}
 func main() {
 	flag.Parse()
 
@@ -719,6 +889,8 @@ func main() {
 
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
+
+	m.HandleFunc("/exec/{machine}", handleExec)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{key}/{expiry}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{key}/{host}/{port}/{expiry}/{mac}", handleVNC)
 	s := &http.Server{
