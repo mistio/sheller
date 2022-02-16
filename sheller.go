@@ -736,7 +736,18 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 	log.Println("VNC connection finished")
 }
+
+type cursorPosition struct {
+	x int
+	y int
+}
+
+var default_column = len("root@nginx:/")
+var cursorPos cursorPosition = cursorPosition{x: default_column, y: 0}
+var last_y = 0
+
 func handleExec(w http.ResponseWriter, r *http.Request) {
+
 	cacheBuff.Write([]byte{0})
 	canWrite := true
 	vars := mux.Vars(r)
@@ -785,19 +796,22 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 
 	wg := sync.WaitGroup{}
 	wg.Add(2)
-
+	//default_column := len("root@nginx:/")
+	//cursorPos := cursorPosition{default_column, 0}
 	// add color to the output
-	shell_default := "\033[1m\033[01;94mmist.io@sheller[" + "\033[01;35mPod\033[1m\033[01;94m \033[01;32m" + opts.Container + "\033[1m\033[01;94m]:~$ \033[01;37m"
-	connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
+	//shell_default := "\033[1m\033[01;94mmist.io@sheller[" + "\033[01;35mPod\033[1m\033[01;94m \033[01;32m" + opts.Container + "\033[1m\033[01;94m]:~$ \033[01;37m"
+	//connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
 
 	go func() {
 		defer wg.Done()
 		for {
 			_, data, err := connection.ReadMessage()
+			fmt.Print(data)
 			if err != nil {
 				wg.Done()
 			}
 			if strings.Contains(string(data), "{\"cols\"") {
+
 				data = []byte{}
 			}
 			if err != nil {
@@ -805,13 +819,23 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 			dataLength := len(data)
 			dataBuffer := bytes.Trim(data, "\n\r\t")
+
 			if bytes.Contains(dataBuffer, []byte{127}) {
-				connection.WriteMessage(websocket.TextMessage, []byte{127, 8, 32, 8})
+				if cursorPos.x > default_column+1 && cursorPos.y >= last_y {
+					connection.WriteMessage(websocket.TextMessage, []byte{127, 8, 32, 8})
+					temp := cacheBuff.Bytes()[:len(cacheBuff.Bytes())-1]
+					cacheBuff.Reset()
+					cacheBuff.Write(temp)
+					cursorPos.x--
+				}
+				continue
 			}
-			if bytes.Contains(dataBuffer, []byte{3}) {
-				canWrite = true
-				connection.WriteMessage(websocket.BinaryMessage, []byte{10, 13})
-				connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
+			if bytes.Contains(dataBuffer, []byte{27, 91, 65}) {
+				cursorPos.y--
+				continue
+			}
+			if bytes.Contains(dataBuffer, []byte{27, 91, 66}) {
+				cursorPos.y++
 				continue
 			}
 			fmt.Printf("received message of size %d byte(s) from xterm.js\n", dataLength)
@@ -819,27 +843,28 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 				fmt.Printf("failed to get the correct number of bytes read, ignoring message")
 				continue
 			}
+
+			if canWrite == true && string(data) != "\r" {
+				cacheBuff.Write(dataBuffer)
+				connection.WriteMessage(websocket.BinaryMessage, dataBuffer)
+				cursorPos.x++
+
+				if err != nil {
+					fmt.Printf("failed to write %v bytes to tty: %s", len(dataBuffer), err)
+
+				}
+			}
 			if string(data) == "\r" {
 
 				fmt.Printf("received carriage return from terminal\n")
 				cacheBuff.Write([]byte{10})
 				result := cacheBuff.Bytes()
-				// entoli : [0,12,13,10]
-				// apotelesma entolis : [1,12,13,10 ... 123 ,12, 14]
 				if err := conn_pod.WriteMessage(websocket.BinaryMessage, result); err != nil {
 					fmt.Print("Error sending command to pod:", err)
 				}
 				connection.WriteMessage(websocket.BinaryMessage, []byte{13})
 				canWrite = false
 
-			}
-			if canWrite == true && string(data) != "\r" {
-				cacheBuff.Write(dataBuffer)
-				connection.WriteMessage(websocket.BinaryMessage, dataBuffer)
-				if err != nil {
-					fmt.Printf("failed to write %v bytes to tty: %s", len(dataBuffer), err)
-
-				}
 			}
 
 		}
@@ -855,9 +880,11 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 			// append shell_default to buf
 
-			if len(buf) > 3 && buf[0] == 1 {
+			if len(buf) > 1 && buf[0] == 1 {
 				result := buf[len(cacheBuff.Bytes()):]
-				result = bytes.Replace(result, []byte{35, 32}, []byte{}, 1)
+				result = bytes.Replace(result, []byte{35}, []byte{}, 1)
+				// count the new lines of result
+
 				connection.WriteMessage(websocket.TextMessage, result)
 				if canWrite == true {
 					//connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
@@ -865,7 +892,16 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 				cacheBuff.Reset()
 				cacheBuff.Write([]byte{0})
 				canWrite = true
+				if len(buf)-3 > default_column {
+					fmt.Println(default_column)
+					fmt.Println(len(buf))
+					newLineCount := bytes.Count(buf, []byte{10})
+					cursorPos.y += newLineCount + 1
+					last_y = cursorPos.y
+
+				}
 			}
+
 		}
 	}()
 
