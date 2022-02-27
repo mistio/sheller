@@ -58,10 +58,20 @@ var (
 	writeTimeout     = flag.Duration("write_timeout", 10*time.Second, "Write timeout.")
 	pongTimeout      = flag.Duration("pong_timeout", 10*time.Second, "Pong message timeout.")
 	// Send pings to peer with this period. Must be less than pongTimeout.
-	pingPeriod = (*pongTimeout * 9) / 10
-	kubeconfig string
-	upgrader   websocket.Upgrader
-	cacheBuff  bytes.Buffer
+	pingPeriod          = (*pongTimeout * 9) / 10
+	kubeconfig          string
+	upgrader            websocket.Upgrader
+	cacheBuff           bytes.Buffer
+	defaultColumnLength int
+	cursorPos           int
+)
+
+var (
+	newline        = []byte{10}
+	carriageReturn = []byte{13}
+	delete         = []byte{127}
+	up             = []byte{27, 91, 65}
+	down           = []byte{27, 91, 66}
 )
 
 type TTYSize struct {
@@ -745,24 +755,89 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	log.Println("VNC connection finished")
 }
 
-type cursorPosition struct {
-	x int
-	y int
+func hostToClientWS(clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for {
+		_, buf, err := podConn.ReadMessage()
+		if err != nil {
+			log.Println("Error receiving command output from pod: ", err)
+			wg.Done()
+		}
+		if len(buf) > 1 && buf[0] == 1 {
+			result := buf[len(cacheBuff.Bytes()):]
+			result = bytes.Replace(result, []byte{35}, []byte{}, 1)
+			clientConn.WriteMessage(websocket.BinaryMessage, result)
+			cacheBuff.Reset()
+			cacheBuff.Write([]byte{0})
+			cursorPos = defaultColumnLength
+		}
+	}
 }
-
-var default_column = len("root@nginx:/")
-var cursorPos cursorPosition = cursorPosition{x: default_column, y: 0}
-var last_y = 0
-
-func handleExec(w http.ResponseWriter, r *http.Request) {
-
-	cacheBuff.Write([]byte{0})
-	canWrite := true
-	vars := mux.Vars(r)
-	container := vars["machine"]
+func clientToHostWS(clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for {
+		_, DataWithCheckByte, _ := clientConn.ReadMessage()
+		/*
+			to do: ignore normal closure error
+			if err != nil {
+				fmt.Print("Error reading from xterm.js", err)
+			}
+		*/
+		switch DataWithCheckByte[0] {
+		case 0:
+			data := DataWithCheckByte[1:]
+			dataLength := len(data)
+			dataBuffer := bytes.Trim(data, "\n\r\t")
+			if bytes.Contains(dataBuffer, delete) {
+				if cursorPos > defaultColumnLength+1 {
+					clientConn.WriteMessage(websocket.TextMessage, []byte{127, 8, 32, 8}) // does not delete a character as intented in the front-end
+					/*  Lines below remove the last character from the buffer
+					so we don't send a deleted character to the pod.
+					TODO: make it more general, so that it can delete a character
+					in any position we have the placed the cursor at
+					*/
+					temp := cacheBuff.Bytes()[:len(cacheBuff.Bytes())-1]
+					cacheBuff.Reset()
+					cacheBuff.Write(temp)
+					cursorPos--
+				}
+				continue
+			}
+			if bytes.Contains(dataBuffer, up) {
+				continue
+			}
+			if bytes.Contains(dataBuffer, down) {
+				continue
+			}
+			if dataLength == -1 {
+				log.Println("failed to get the correct number of bytes read, ignoring message")
+				continue
+			}
+			if !bytes.Contains(data, carriageReturn) {
+				cacheBuff.Write(dataBuffer)
+				err := clientConn.WriteMessage(websocket.BinaryMessage, dataBuffer)
+				if err != nil {
+					log.Printf("failed to write %v bytes to tty: %s", len(dataBuffer), err)
+				}
+				cursorPos++
+			}
+			if bytes.Contains(data, carriageReturn) {
+				cacheBuff.Write(newline)
+				result := cacheBuff.Bytes()
+				if err := podConn.WriteMessage(websocket.BinaryMessage, result); err != nil {
+					log.Println("Error sending command to pod: ", err)
+				}
+				clientConn.WriteMessage(websocket.BinaryMessage, carriageReturn)
+			}
+		case 1:
+			continue
+		}
+	}
+}
+func KubeSetup(container string) (*websocket.Conn, *http.Response, error) {
 	opts := &ExecOptions{
 		Namespace: "default",
-		Pod:       "nginx",
+		Pod:       container,
 		Container: container,
 		Command:   []string{"/bin/bash"},
 		Stdin:     true,
@@ -791,148 +866,33 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		TLSClientConfig: tlsConfig,
 		Subprotocols:    KubeProtocols,
 	}
-	connection, err := upgrader.Upgrade(w, r, nil)
+	podConn, Response, err := dialer.Dial(req.URL.String(), req.Header)
+	if err != nil {
+		log.Println(err)
+	}
+	return podConn, Response, err
+}
+
+func handleWS(w http.ResponseWriter, r *http.Request) {
+	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Print(err)
 	}
-	conn_pod, _, err := dialer.Dial(req.URL.String(), req.Header)
-	if err != nil {
-		fmt.Print(err)
-	}
-	defer conn_pod.Close()
-
-	errChan := make(chan error, 3)
-
+	cacheBuff.Write([]byte{0})
+	vars := mux.Vars(r)
+	podConn, _, err := KubeSetup(vars["machine"])
+	defer podConn.Close()
+	defaultColumnLength = len("root@" + vars["machine"] + ":/")
+	cursorPos = defaultColumnLength
 	wg := sync.WaitGroup{}
 	wg.Add(2)
-	//default_column := len("root@nginx:/")
-	//cursorPos := cursorPosition{default_column, 0}
-	// add color to the output
-	//shell_default := "\033[1m\033[01;94mmist.io@sheller[" + "\033[01;35mPod\033[1m\033[01;94m \033[01;32m" + opts.Container + "\033[1m\033[01;94m]:~$ \033[01;37m"
-	//connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
-	go func() {
-		defer wg.Done()
-		for {
-			_, check_data, _ := connection.ReadMessage()
-			/*
-					if err != nil {
-						fmt.Print("Error reading from xterm.js", err)
-					}
-				/*
-				if strings.Contains(string(data), "{\"height\"") {
-					fmt.Printf("resize data: %s\n", data)
-					fmt.Print("first byte: ", data[0])
-					data = []byte{}
-					continue
-				}
-			*/
-			if check_data[0] == 1 {
-				continue
-			} else {
-				data := check_data[1:]
-
-				fmt.Printf("data from frontend(string): %s\n", data)
-				fmt.Print("data from frontend(bytes):\n", data)
-
-				dataLength := len(data)
-				dataBuffer := bytes.Trim(data, "\n\r\t")
-
-				if bytes.Contains(dataBuffer, []byte{127}) {
-					if cursorPos.x > default_column+1 && cursorPos.y >= last_y {
-						connection.WriteMessage(websocket.TextMessage, []byte{127, 8, 32, 8})
-						temp := cacheBuff.Bytes()[:len(cacheBuff.Bytes())-1]
-						cacheBuff.Reset()
-						cacheBuff.Write(temp)
-						cursorPos.x--
-					}
-					continue
-				}
-				if bytes.Contains(dataBuffer, []byte{27, 91, 65}) {
-					cursorPos.y--
-					continue
-				}
-				if bytes.Contains(dataBuffer, []byte{27, 91, 66}) {
-					cursorPos.y++
-					continue
-				}
-				fmt.Printf("received message of size %d byte(s) from xterm.js\n", dataLength)
-				if dataLength == -1 { // invalid
-					fmt.Printf("failed to get the correct number of bytes read, ignoring message")
-					continue
-				}
-
-				if canWrite == true && string(data) != "\r" {
-					cacheBuff.Write(dataBuffer)
-					connection.WriteMessage(websocket.BinaryMessage, dataBuffer)
-					cursorPos.x++
-					/*
-						if err != nil {
-							fmt.Printf("failed to write %v bytes to tty: %s", len(dataBuffer), err)
-
-						}
-					*/
-				}
-				if string(data) == "\r" {
-
-					fmt.Printf("received carriage return from terminal\n")
-					cacheBuff.Write([]byte{10})
-					result := cacheBuff.Bytes()
-					if err := conn_pod.WriteMessage(websocket.BinaryMessage, result); err != nil {
-						fmt.Print("Error sending command to pod:", err)
-					}
-					connection.WriteMessage(websocket.BinaryMessage, []byte{13})
-					canWrite = false
-
-				}
-			}
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		for {
-
-			_, buf, err := conn_pod.ReadMessage()
-			if err != nil {
-				fmt.Print("Error receiving command output from pod: ", err)
-				wg.Done()
-			}
-			// append shell_default to buf
-			//fmt.Print(string(buf))
-			//connection.WriteMessage(websocket.BinaryMessage, buf)
-			if err != nil {
-				fmt.Print("Error writing to front-end(root@..): ", err)
-				wg.Done()
-			}
-
-			if len(buf) > 1 && buf[0] == 1 {
-				result := buf[len(cacheBuff.Bytes()):]
-				result = bytes.Replace(result, []byte{35}, []byte{}, 1)
-				// count the new lines of result
-
-				connection.WriteMessage(websocket.BinaryMessage, result)
-				//if canWrite == true {
-				//	//connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
-				//}
-				cacheBuff.Reset()
-				cacheBuff.Write([]byte{0})
-				canWrite = true
-				if len(buf)-3 > default_column {
-					fmt.Println(default_column)
-					fmt.Println(len(buf))
-					newLineCount := bytes.Count(buf, []byte{10})
-					cursorPos.y += newLineCount + 1
-					last_y = cursorPos.y
-
-				}
-			}
-
-		}
-	}()
+	go hostToClientWS(clientConn, podConn, &wg)
+	go clientToHostWS(clientConn, podConn, &wg)
+	/* TODO:
+	- ping the pod every so often to keep the connection alive
+	- ping the front-end every so often to keep the connection alive
+	*/
 	wg.Wait()
-	close(errChan)
-	error_shell := <-errChan
-	fmt.Print(error_shell)
-
 }
 func main() {
 	flag.Parse()
@@ -949,7 +909,7 @@ func main() {
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
 
-	m.HandleFunc("/exec/{machine}", handleExec)
+	m.HandleFunc("/exec/{machine}", handleWS)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{key}/{expiry}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{key}/{host}/{port}/{expiry}/{mac}", handleVNC)
 	s := &http.Server{
@@ -961,3 +921,4 @@ func main() {
 	}
 	log.Fatal(s.ListenAndServe())
 }
+

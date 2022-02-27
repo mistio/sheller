@@ -3,7 +3,6 @@ module sheller
 go 1.18
 
 require (
-	github.com/creack/pty v1.1.17
 	github.com/elliotchance/sshtunnel v1.2.0
 	github.com/google/huproxy v0.0.0-20201212092321-45945e9985c9
 	github.com/gorilla/mux v1.8.0
