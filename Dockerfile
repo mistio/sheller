@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 FROM golang:1.18 as build-env
+=======
+FROM golang:1.17 as build-env
+>>>>>>> fix build issue
 
 WORKDIR /go/src/app
 ADD . /go/src/app
