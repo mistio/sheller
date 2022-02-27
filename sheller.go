@@ -30,7 +30,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,7 +49,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/util/homedir"
 )
 
 var (
@@ -544,12 +542,22 @@ func hostToClient(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	}
 }
 
+func writeStringTofile(file os.File, data []byte) error {
+	_, err := file.WriteString(string(data))
+	return err
+}
+
 func parseKubeConfig() {
-	if home := homedir.HomeDir(); home != "" {
-		flag.StringVar(&kubeconfig, "kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
-	} else {
-		flag.StringVar(&kubeconfig, "kubeconfig", "~/.kube/config", "absolute path to the kubeconfig file")
-	}
+	/*
+		if home := homedir.HomeDir(); home != "" {
+			flag.StringVar(&kubeconfig, "kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+		} else {
+			flag.StringVar(&kubeconfig, "kubeconfig", "~/.kube/config", "absolute path to the kubeconfig file")
+		}
+	*/
+
+	flag.StringVar(&kubeconfig, "kubeconfig", "config", "absolute path to the kubeconfig file")
+
 	flag.Parse()
 
 }
@@ -761,6 +769,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		TTY:       true,
 	}
 	parseKubeConfig()
+
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		log.Fatalln(err)
@@ -801,72 +810,81 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	// add color to the output
 	//shell_default := "\033[1m\033[01;94mmist.io@sheller[" + "\033[01;35mPod\033[1m\033[01;94m \033[01;32m" + opts.Container + "\033[1m\033[01;94m]:~$ \033[01;37m"
 	//connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
-
 	go func() {
 		defer wg.Done()
 		for {
-			_, data, err := connection.ReadMessage()
-			fmt.Print(data)
-			if err != nil {
-				wg.Done()
-			}
-			if strings.Contains(string(data), "{\"cols\"") {
-
-				data = []byte{}
-			}
-			if err != nil {
-				fmt.Print("Error reading from xterm.js", err)
-			}
-			dataLength := len(data)
-			dataBuffer := bytes.Trim(data, "\n\r\t")
-
-			if bytes.Contains(dataBuffer, []byte{127}) {
-				if cursorPos.x > default_column+1 && cursorPos.y >= last_y {
-					connection.WriteMessage(websocket.TextMessage, []byte{127, 8, 32, 8})
-					temp := cacheBuff.Bytes()[:len(cacheBuff.Bytes())-1]
-					cacheBuff.Reset()
-					cacheBuff.Write(temp)
-					cursorPos.x--
+			_, check_data, _ := connection.ReadMessage()
+			/*
+					if err != nil {
+						fmt.Print("Error reading from xterm.js", err)
+					}
+				/*
+				if strings.Contains(string(data), "{\"height\"") {
+					fmt.Printf("resize data: %s\n", data)
+					fmt.Print("first byte: ", data[0])
+					data = []byte{}
+					continue
 				}
+			*/
+			if check_data[0] == 1 {
 				continue
-			}
-			if bytes.Contains(dataBuffer, []byte{27, 91, 65}) {
-				cursorPos.y--
-				continue
-			}
-			if bytes.Contains(dataBuffer, []byte{27, 91, 66}) {
-				cursorPos.y++
-				continue
-			}
-			fmt.Printf("received message of size %d byte(s) from xterm.js\n", dataLength)
-			if dataLength == -1 { // invalid
-				fmt.Printf("failed to get the correct number of bytes read, ignoring message")
-				continue
-			}
+			} else {
+				data := check_data[1:]
 
-			if canWrite == true && string(data) != "\r" {
-				cacheBuff.Write(dataBuffer)
-				connection.WriteMessage(websocket.BinaryMessage, dataBuffer)
-				cursorPos.x++
+				fmt.Printf("data from frontend(string): %s\n", data)
+				fmt.Print("data from frontend(bytes):\n", data)
 
-				if err != nil {
-					fmt.Printf("failed to write %v bytes to tty: %s", len(dataBuffer), err)
+				dataLength := len(data)
+				dataBuffer := bytes.Trim(data, "\n\r\t")
+
+				if bytes.Contains(dataBuffer, []byte{127}) {
+					if cursorPos.x > default_column+1 && cursorPos.y >= last_y {
+						connection.WriteMessage(websocket.TextMessage, []byte{127, 8, 32, 8})
+						temp := cacheBuff.Bytes()[:len(cacheBuff.Bytes())-1]
+						cacheBuff.Reset()
+						cacheBuff.Write(temp)
+						cursorPos.x--
+					}
+					continue
+				}
+				if bytes.Contains(dataBuffer, []byte{27, 91, 65}) {
+					cursorPos.y--
+					continue
+				}
+				if bytes.Contains(dataBuffer, []byte{27, 91, 66}) {
+					cursorPos.y++
+					continue
+				}
+				fmt.Printf("received message of size %d byte(s) from xterm.js\n", dataLength)
+				if dataLength == -1 { // invalid
+					fmt.Printf("failed to get the correct number of bytes read, ignoring message")
+					continue
+				}
+
+				if canWrite == true && string(data) != "\r" {
+					cacheBuff.Write(dataBuffer)
+					connection.WriteMessage(websocket.BinaryMessage, dataBuffer)
+					cursorPos.x++
+					/*
+						if err != nil {
+							fmt.Printf("failed to write %v bytes to tty: %s", len(dataBuffer), err)
+
+						}
+					*/
+				}
+				if string(data) == "\r" {
+
+					fmt.Printf("received carriage return from terminal\n")
+					cacheBuff.Write([]byte{10})
+					result := cacheBuff.Bytes()
+					if err := conn_pod.WriteMessage(websocket.BinaryMessage, result); err != nil {
+						fmt.Print("Error sending command to pod:", err)
+					}
+					connection.WriteMessage(websocket.BinaryMessage, []byte{13})
+					canWrite = false
 
 				}
 			}
-			if string(data) == "\r" {
-
-				fmt.Printf("received carriage return from terminal\n")
-				cacheBuff.Write([]byte{10})
-				result := cacheBuff.Bytes()
-				if err := conn_pod.WriteMessage(websocket.BinaryMessage, result); err != nil {
-					fmt.Print("Error sending command to pod:", err)
-				}
-				connection.WriteMessage(websocket.BinaryMessage, []byte{13})
-				canWrite = false
-
-			}
-
 		}
 	}()
 	go func() {
@@ -879,16 +897,22 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 				wg.Done()
 			}
 			// append shell_default to buf
+			//fmt.Print(string(buf))
+			//connection.WriteMessage(websocket.BinaryMessage, buf)
+			if err != nil {
+				fmt.Print("Error writing to front-end(root@..): ", err)
+				wg.Done()
+			}
 
 			if len(buf) > 1 && buf[0] == 1 {
 				result := buf[len(cacheBuff.Bytes()):]
 				result = bytes.Replace(result, []byte{35}, []byte{}, 1)
 				// count the new lines of result
 
-				connection.WriteMessage(websocket.TextMessage, result)
-				if canWrite == true {
-					//connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
-				}
+				connection.WriteMessage(websocket.BinaryMessage, result)
+				//if canWrite == true {
+				//	//connection.WriteMessage(websocket.TextMessage, []byte(shell_default))
+				//}
 				cacheBuff.Reset()
 				cacheBuff.Write([]byte{0})
 				canWrite = true
@@ -904,7 +928,6 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 
 		}
 	}()
-
 	wg.Wait()
 	close(errChan)
 	error_shell := <-errChan
