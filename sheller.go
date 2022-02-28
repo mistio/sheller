@@ -72,6 +72,8 @@ var (
 	delete         = []byte{127}
 	up             = []byte{27, 91, 65}
 	down           = []byte{27, 91, 66}
+	right          = []byte{27, 91, 67}
+	left           = []byte{27, 91, 68}
 )
 
 type TTYSize struct {
@@ -758,21 +760,27 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 func hostToClientWS(clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for {
+
 		_, buf, err := podConn.ReadMessage()
+		log.Println(string(buf))
+		log.Println(buf)
 		if err != nil {
 			log.Println("Error receiving command output from pod: ", err)
 			wg.Done()
 		}
-		if len(buf) > 1 && buf[0] == 1 {
-			result := buf[len(cacheBuff.Bytes()):]
-			result = bytes.Replace(result, []byte{35}, []byte{}, 1)
-			clientConn.WriteMessage(websocket.BinaryMessage, result)
+		if len(buf) > 1 {
+			switch buf[0] {
+			case 1:
+				buf[0] = 0
+				s := strings.Replace(string(buf[1:]), cacheBuff.String(), "", -1)
+				clientConn.WriteMessage(websocket.BinaryMessage, []byte(s))
+			}
 			cacheBuff.Reset()
 			cacheBuff.Write([]byte{0})
-			cursorPos = defaultColumnLength
 		}
 	}
 }
+
 func clientToHostWS(clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for {
@@ -787,48 +795,22 @@ func clientToHostWS(clientConn *websocket.Conn, podConn *websocket.Conn, wg *syn
 		case 0:
 			data := DataWithCheckByte[1:]
 			dataLength := len(data)
-			dataBuffer := bytes.Trim(data, "\n\r\t")
-			if bytes.Contains(dataBuffer, delete) {
-				if cursorPos > defaultColumnLength+1 {
-					clientConn.WriteMessage(websocket.TextMessage, []byte{127, 8, 32, 8}) // does not delete a character as intented in the front-end
-					/*  Lines below remove the last character from the buffer
-					so we don't send a deleted character to the pod.
-					TODO: make it more general, so that it can delete a character
-					in any position we have the placed the cursor at
-					*/
-					temp := cacheBuff.Bytes()[:len(cacheBuff.Bytes())-1]
-					cacheBuff.Reset()
-					cacheBuff.Write(temp)
-					cursorPos--
-				}
-				continue
-			}
-			if bytes.Contains(dataBuffer, up) {
-				continue
-			}
-			if bytes.Contains(dataBuffer, down) {
-				continue
-			}
 			if dataLength == -1 {
 				log.Println("failed to get the correct number of bytes read, ignoring message")
 				continue
 			}
-			if !bytes.Contains(data, carriageReturn) {
-				cacheBuff.Write(dataBuffer)
-				err := clientConn.WriteMessage(websocket.BinaryMessage, dataBuffer)
-				if err != nil {
-					log.Printf("failed to write %v bytes to tty: %s", len(dataBuffer), err)
-				}
-				cursorPos++
-			}
-			if bytes.Contains(data, carriageReturn) {
+			if bytes.Contains(data, newline) {
+				cacheBuff.Write(carriageReturn)
 				cacheBuff.Write(newline)
-				result := cacheBuff.Bytes()
-				if err := podConn.WriteMessage(websocket.BinaryMessage, result); err != nil {
-					log.Println("Error sending command to pod: ", err)
-				}
-				clientConn.WriteMessage(websocket.BinaryMessage, carriageReturn)
+			} else {
+				cacheBuff.Write(data)
 			}
+			err := podConn.WriteMessage(websocket.BinaryMessage, cacheBuff.Bytes())
+			if err != nil {
+				log.Printf("failed to write %v bytes to tty: %s", len(data), err)
+			}
+			cacheBuff.Reset()
+			cacheBuff.Write([]byte{0})
 		case 1:
 			continue
 		}
@@ -882,7 +864,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	podConn, _, err := KubeSetup(vars["machine"])
 	defer podConn.Close()
-	defaultColumnLength = len("root@" + vars["machine"] + ":/")
+	defaultColumnLength = len("root@" + vars["machine"] + ":/ ")
 	cursorPos = defaultColumnLength
 	wg := sync.WaitGroup{}
 	wg.Add(2)
