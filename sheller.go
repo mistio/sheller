@@ -816,6 +816,7 @@ func clientToHostWS(clientConn *websocket.Conn, podConn *websocket.Conn, wg *syn
 		}
 	}
 }
+
 func KubeSetup(container string) (*websocket.Conn, *http.Response, error) {
 	opts := &ExecOptions{
 		Namespace: "default",
@@ -826,7 +827,16 @@ func KubeSetup(container string) (*websocket.Conn, *http.Response, error) {
 		TTY:       true,
 	}
 	parseKubeConfig()
-
+	/*
+		payload := &AppRoleLoginPayload{
+			Role_id:   "YOUR_ROLE_ID",
+			Secret_id: "YOUR_SECRET_ID",
+		}
+		token := payload.Login()
+		credentials := token.getSecret()
+		the above credentials have to be stored in a file and then read in
+		alongside other info of the kubeconfig(cluster,context,user)
+	*/
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		log.Fatalln(err)
@@ -878,7 +888,6 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 }
 func main() {
 	flag.Parse()
-
 	upgrader = websocket.Upgrader{
 		ReadBufferSize:   1024,
 		WriteBufferSize:  1024,
@@ -903,4 +912,3 @@ func main() {
 	}
 	log.Fatal(s.ListenAndServe())
 }
-
