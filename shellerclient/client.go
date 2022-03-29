@@ -28,7 +28,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	huproxy "github.com/google/huproxy/lib"
+	sheller "github.com/mistio/sheller/lib"
 )
 
 var (
@@ -79,7 +79,7 @@ func main() {
 	url := flag.Arg(0)
 
 	if *verbose {
-		log.Printf("huproxyclient %s", huproxy.Version)
+		log.Printf("shellerclient %s", sheller.Version)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -128,7 +128,7 @@ func main() {
 
 	// stdin -> websocket
 	// TODO: NextWriter() seems to be broken.
-	if err := huproxy.File2WS(ctx, cancel, os.Stdin, conn); err == io.EOF {
+	if err := sheller.File2WS(ctx, cancel, os.Stdin, conn); err == io.EOF {
 		if err := conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {

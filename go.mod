@@ -1,10 +1,9 @@
-module huproxy
+module sheller
 
 go 1.15
 
 require (
 	github.com/elliotchance/sshtunnel v1.2.0
-	github.com/google/huproxy v0.0.0-20201212092321-45945e9985c9
 	github.com/gorilla/mux v1.8.0
 	github.com/gorilla/websocket v1.4.2
 	go.mongodb.org/mongo-driver v1.4.4

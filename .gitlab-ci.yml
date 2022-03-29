@@ -57,14 +57,14 @@ stages:
     - builder
   dependencies: []
 
-build_huproxy_image:
+build_sheller_image:
   <<: *docker_build_template
   script:
-    - docker build --rm -t gcr.io/mist-ops/huproxy:$CI_COMMIT_SHA .
-    - docker tag gcr.io/mist-ops/huproxy:$CI_COMMIT_SHA gcr.io/mist-ops/huproxy:$CI_COMMIT_REF_SLUG
-    - docker push gcr.io/mist-ops/huproxy:$CI_COMMIT_SHA
-    - docker push gcr.io/mist-ops/huproxy:$CI_COMMIT_REF_SLUG
-    - docker tag gcr.io/mist-ops/huproxy:$CI_COMMIT_SHA mist/huproxy:$CI_COMMIT_SHA
-    - docker tag gcr.io/mist-ops/huproxy:$CI_COMMIT_SHA mist/huproxy:$CI_COMMIT_REF_SLUG
-    - docker push mist/huproxy:$CI_COMMIT_SHA
-    - docker push mist/huproxy:$CI_COMMIT_REF_SLUG
+    - docker build --rm -t gcr.io/mist-ops/sheller:$CI_COMMIT_SHA .
+    - docker tag gcr.io/mist-ops/sheller:$CI_COMMIT_SHA gcr.io/mist-ops/sheller:$CI_COMMIT_REF_SLUG
+    - docker push gcr.io/mist-ops/sheller:$CI_COMMIT_SHA
+    - docker push gcr.io/mist-ops/sheller:$CI_COMMIT_REF_SLUG
+    - docker tag gcr.io/mist-ops/sheller:$CI_COMMIT_SHA mist/sheller:$CI_COMMIT_SHA
+    - docker tag gcr.io/mist-ops/sheller:$CI_COMMIT_SHA mist/sheller:$CI_COMMIT_REF_SLUG
+    - docker push mist/sheller:$CI_COMMIT_SHA
+    - docker push mist/sheller:$CI_COMMIT_REF_SLUG
