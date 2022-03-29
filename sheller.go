@@ -34,10 +34,11 @@ import (
 	"sync"
 	"time"
 
+	sheller "sheller/lib"
+
 	"github.com/elliotchance/sshtunnel"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
-	sheller "github.com/mistio/sheller/lib"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"

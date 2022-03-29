@@ -28,7 +28,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	sheller "github.com/mistio/sheller/lib"
+	sheller "sheller/lib"
 )
 
 var (
