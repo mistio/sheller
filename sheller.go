@@ -757,18 +757,31 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	log.Println("VNC connection finished")
 }
 
-func hostToClientWS(clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
+func hostToClientKubernetes(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
+	defer cancel()
 	for {
-
-		_, buf, err := podConn.ReadMessage()
-		log.Println(string(buf))
-		log.Println(buf)
+		r, err := getNextReader(ctx, podConn)
 		if err != nil {
-			log.Println("Error receiving command output from pod: ", err)
-			wg.Done()
+			if err := clientConn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
+			} else if err != nil {
+				log.Printf("Error sending close message: %v", err)
+			}
+			return
 		}
-		if len(buf) > 1 {
+		if r == nil {
+			return
+		}
+		var buf []byte
+		buf = make([]byte, 1024, 10*1024)
+		readBytes, err := r.Read(buf)
+		if err != nil {
+			log.Println(err)
+		}
+
+		if readBytes > 1 {
 			switch buf[0] {
 			case 1:
 				buf[0] = 0
@@ -781,19 +794,28 @@ func hostToClientWS(clientConn *websocket.Conn, podConn *websocket.Conn, wg *syn
 	}
 }
 
-func clientToHostWS(clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
+func clientToHostKubernetes(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
+	defer cancel()
+	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	clientConn.SetPongHandler(func(string) error { clientConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	podConn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	podConn.SetPongHandler(func(string) error { podConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		_, DataWithCheckByte, _ := clientConn.ReadMessage()
-		/*
-			to do: ignore normal closure error
-			if err != nil {
-				fmt.Print("Error reading from xterm.js", err)
-			}
-		*/
-		switch DataWithCheckByte[0] {
+		r, err := getNextReader(ctx, clientConn)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		if r == nil {
+			return
+		}
+		dataTypeBuf := make([]byte, 2)
+		_, err = r.Read(dataTypeBuf)
+
+		switch dataTypeBuf[0] {
 		case 0:
-			data := DataWithCheckByte[1:]
+			data := dataTypeBuf[1:]
 			dataLength := len(data)
 			if dataLength == -1 {
 				log.Println("failed to get the correct number of bytes read, ignoring message")
@@ -827,16 +849,6 @@ func KubeSetup(container string) (*websocket.Conn, *http.Response, error) {
 		TTY:       true,
 	}
 	parseKubeConfig()
-	/*
-		payload := &AppRoleLoginPayload{
-			Role_id:   "YOUR_ROLE_ID",
-			Secret_id: "YOUR_SECRET_ID",
-		}
-		token := payload.Login()
-		credentials := token.getSecret()
-		the above credentials have to be stored in a file and then read in
-		alongside other info of the kubeconfig(cluster,context,user)
-	*/
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		log.Fatalln(err)
@@ -865,7 +877,9 @@ func KubeSetup(container string) (*websocket.Conn, *http.Response, error) {
 	return podConn, Response, err
 }
 
-func handleWS(w http.ResponseWriter, r *http.Request) {
+func handleKubernetes(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Print(err)
@@ -877,13 +891,11 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	defaultColumnLength = len("root@" + vars["machine"] + ":/ ")
 	cursorPos = defaultColumnLength
 	wg := sync.WaitGroup{}
-	wg.Add(2)
-	go hostToClientWS(clientConn, podConn, &wg)
-	go clientToHostWS(clientConn, podConn, &wg)
-	/* TODO:
-	- ping the pod every so often to keep the connection alive
-	- ping the front-end every so often to keep the connection alive
-	*/
+	wg.Add(4)
+	go hostToClientKubernetes(ctx, cancel, clientConn, podConn, &wg)
+	go clientToHostKubernetes(ctx, cancel, clientConn, podConn, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, podConn, &wg)
 	wg.Wait()
 }
 func main() {
@@ -900,7 +912,7 @@ func main() {
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
 
-	m.HandleFunc("/exec/{machine}", handleWS)
+	m.HandleFunc("/exec/{machine}", handleKubernetes)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{key}/{expiry}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{key}/{host}/{port}/{expiry}/{mac}", handleVNC)
 	s := &http.Server{
