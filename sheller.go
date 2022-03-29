@@ -35,9 +35,9 @@ import (
 	"time"
 
 	"github.com/elliotchance/sshtunnel"
-	huproxy "github.com/google/huproxy/lib"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	sheller "github.com/mistio/sheller/lib"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -516,7 +516,7 @@ func hostToClient(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	defer cancel()
 	// server -> websocket
 	// TODO: NextWriter() seems to be broken.
-	if err := huproxy.File2WS(ctx, cancel, reader, conn); err == io.EOF {
+	if err := sheller.File2WS(ctx, cancel, reader, conn); err == io.EOF {
 		if err := conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
@@ -716,7 +716,7 @@ func main() {
 		},
 	}
 
-	log.Printf("huproxy %s", huproxy.Version)
+	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{key}/{expiry}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{key}/{host}/{port}/{expiry}/{mac}", handleVNC)
