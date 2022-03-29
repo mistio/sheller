@@ -9,17 +9,18 @@ import (
 var kubernetesSecretsURI = vaultAddr + "/v1/secret/data/sheller/kubernetes/admin"
 
 type KubernetesConfigCredentials struct {
-	Certificate_authority_data string
-	Client_certificate_data    string
-	Client_key_data            string
+	CertificateAuthorityData string
+	ClientCertificateData    string
+	ClientKeyData            string
 }
 
+/*TODO: use ctx to check for expiry */
 func (token *AppRoleClientToken) getSecret() KubernetesConfigCredentials {
 	req, err := http.NewRequest("GET", kubernetesSecretsURI, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	req.Header.Set("X-Vault-Token", token.ClientTokenString)
+	req.Header.Set("X-Vault-Token", token.Token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Fatal(err)
@@ -28,8 +29,8 @@ func (token *AppRoleClientToken) getSecret() KubernetesConfigCredentials {
 	decoder := json.NewDecoder(resp.Body)
 	decoder.Decode(&result)
 	return KubernetesConfigCredentials{
-		Certificate_authority_data: result["data"]["data"]["certificate-authority-data"].(string),
-		Client_certificate_data:    result["data"]["data"]["client-certificate-data"].(string),
-		Client_key_data:            result["data"]["data"]["client-key-data"].(string),
+		CertificateAuthorityData: result["data"]["data"]["certificate-authority-data"].(string),
+		ClientCertificateData:    result["data"]["data"]["client-certificate-data"].(string),
+		ClientKeyData:            result["data"]["data"]["client-key-data"].(string),
 	}
 }
