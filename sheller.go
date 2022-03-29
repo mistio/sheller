@@ -58,12 +58,10 @@ var (
 	writeTimeout     = flag.Duration("write_timeout", 10*time.Second, "Write timeout.")
 	pongTimeout      = flag.Duration("pong_timeout", 10*time.Second, "Pong message timeout.")
 	// Send pings to peer with this period. Must be less than pongTimeout.
-	pingPeriod          = (*pongTimeout * 9) / 10
-	kubeconfig          string
-	upgrader            websocket.Upgrader
-	cacheBuff           bytes.Buffer
-	defaultColumnLength int
-	cursorPos           int
+	pingPeriod = (*pongTimeout * 9) / 10
+	kubeconfig string
+	upgrader   websocket.Upgrader
+	cacheBuff  bytes.Buffer
 )
 
 var (
@@ -888,8 +886,6 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	podConn, _, err := KubeSetup(vars["machine"])
 	defer podConn.Close()
-	defaultColumnLength = len("root@" + vars["machine"] + ":/ ")
-	cursorPos = defaultColumnLength
 	wg := sync.WaitGroup{}
 	wg.Add(4)
 	go hostToClientKubernetes(ctx, cancel, clientConn, podConn, &wg)
