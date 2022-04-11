@@ -14,20 +14,25 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"hash"
+	"text/template"
+
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -44,6 +49,10 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/crypto/ssh"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 var (
@@ -54,9 +63,148 @@ var (
 	pongTimeout      = flag.Duration("pong_timeout", 10*time.Second, "Pong message timeout.")
 	// Send pings to peer with this period. Must be less than pongTimeout.
 	pingPeriod = (*pongTimeout * 9) / 10
-
-	upgrader websocket.Upgrader
+	cacheBuff  bytes.Buffer
+	kubeconfig string
+	upgrader   websocket.Upgrader
 )
+var kube_config_template string = `apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: {{.Certificate_authority_data}}
+    server: {{.Server}}
+  name: {{.Cluster}}
+contexts:
+- context:
+    cluster: {{.Cluster}}
+    user: {{.User}}
+  name: {{.Context_name}}
+current-context: {{.Context_name}}
+kind: Config
+preferences: {}
+users:
+- name: {{.User}}
+  user:
+    client-certificate-data: {{.Client_certificate_data}}
+    client-key-data: {{.Client_key_data}}
+`
+
+type ExecOptions struct {
+	Namespace string
+	Pod       string
+	Container string
+	Command   []string
+	TTY       bool
+	Stdin     bool
+}
+
+type KubeConfigTemplate struct {
+	Certificate_authority_data string
+	Server                     string
+	Cluster                    string
+	User                       string
+	Context_name               string
+	Client_certificate_data    string
+	Client_key_data            string
+}
+type WebsocketRoundTripper struct {
+	TLSConfig *tls.Config
+}
+
+var KubeProtocols = []string{
+	"v4.channel.k8s.io",
+	"v3.channel.k8s.io",
+	"v2.channel.k8s.io",
+	"channel.k8s.io",
+}
+
+var (
+	newline        = []byte{10}
+	carriageReturn = []byte{13}
+	delete         = []byte{127}
+	up             = []byte{27, 91, 65}
+	down           = []byte{27, 91, 66}
+	right          = []byte{27, 91, 67}
+	left           = []byte{27, 91, 68}
+)
+
+const (
+	stdin = iota
+	stdout
+	stderr
+)
+
+func k8s_ExecRequest(config *rest.Config, opts *ExecOptions) (*http.Request, error) {
+	u, err := url.Parse(config.Host)
+	if err != nil {
+		return nil, err
+	}
+
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	case "http":
+		u.Scheme = "ws"
+	default:
+		return nil, fmt.Errorf("Unrecognised URL scheme in %v", u)
+	}
+
+	u.Path = fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/exec", opts.Namespace, opts.Pod)
+
+	rawQuery := "stdout=true&tty=true"
+	for _, c := range opts.Command {
+		rawQuery += "&command=" + c
+	}
+
+	if opts.Container != "" {
+		rawQuery += "&container=" + opts.Container
+	}
+
+	if opts.TTY {
+		rawQuery += "&tty=true"
+	}
+
+	if opts.Stdin {
+		rawQuery += "&stdin=true"
+	}
+	u.RawQuery = rawQuery
+
+	return &http.Request{
+		Method: http.MethodGet,
+		URL:    u,
+	}, nil
+}
+
+type DockerExecOptions struct {
+	Host       string
+	Port       string
+	Machine_id string
+	Name       string
+	Cluster    string
+}
+
+func docker_ExecRequest(opts *DockerExecOptions) (*http.Request, error) {
+	//create empty url to be populated
+	u := &url.URL{}
+	u.Scheme = "http"
+	u.Host = opts.Host + ":" + opts.Port
+
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	case "http":
+		u.Scheme = "ws"
+	default:
+		return nil, fmt.Errorf("Unrecognised URL scheme in %v", u)
+	}
+
+	u.Path = fmt.Sprintf("/containers/%s/attach/ws", opts.Machine_id)
+	u.RawQuery = "logs=1&stream=1&stdin=1&stdout=1&stderr=1"
+
+	return &http.Request{
+		Method: http.MethodGet,
+		URL:    u,
+	}, nil
+}
 
 // Key model
 type Key struct {
@@ -532,41 +680,32 @@ func hostToClient(ctx context.Context, cancel context.CancelFunc, conn *websocke
 func handleSSH(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-
 	vars := mux.Vars(r)
 	user := vars["user"]
 	host := vars["host"]
 	port := vars["port"]
-	keyMachineAssociationID := vars["key"]
 	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
+	vault_token := vars["vault_token"]
+	vault_secret_engine_path := vars["vault_secret_engine_path"]
+	key_name := vars["key_name"]
+	vault_addr := os.Getenv("VAULT_ADDR")
 	mac := vars["mac"]
-
+	path := fmt.Sprintf("/v1/%s/data/mist/keys/%s", vault_secret_engine_path, key_name)
 	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
-
 	// Write Data to it
-	h.Write([]byte(user + "," + host + "," + port + "," + keyMachineAssociationID + "," + vars["expiry"]))
+	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vault_token + "," + vault_secret_engine_path + "," + key_name))
 
-	client, err := mongoClient()
+	vault := Vault{
+		address:    vault_addr,
+		secretPath: path,
+		token:      vault_token,
+	}
+	priv, err := GetPrivateKey(vault, h, mac, expiry)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-
-	sessionCookie, err := r.Cookie("session.id")
-	if err != nil {
-		fmt.Println(err.Error())
-	} else {
-		fmt.Println(sessionCookie.Value)
-	}
-
-	// Get result and encode as hexadecimal string
-	priv, err := getPrivateKeyFromKeyMachineAssociation(client, h, mac, expiry, keyMachineAssociationID, sessionCookie.Value)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
 	config := &ssh.ClientConfig{
 		User: user,
 		Auth: []ssh.AuthMethod{
@@ -578,10 +717,12 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	connSSH, err := ssh.Dial("tcp", host+":"+port, config)
 	if err != nil {
 		log.Println("Failed to dial: " + err.Error())
-		err := saveFailedAttemptKeyMachineAssociation(client, keyMachineAssociationID)
-		if err != nil {
-			log.Println("Failed to save failed attempt on KeyMachineAssociation: " + err.Error())
-		}
+		/*
+			err := saveFailedAttemptKeyMachineAssociation(client, keyMachineAssociationID)
+			if err != nil {
+				log.Println("Failed to save failed attempt on KeyMachineAssociation: " + err.Error())
+			}
+		*/
 		return
 	}
 	defer connSSH.Close()
@@ -704,7 +845,238 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 	log.Println("VNC connection finished")
 }
+func parseKubeConfig() {
+	/*
+		if home := homedir.HomeDir(); home != "" {
+			flag.StringVar(&kubeconfig, "kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+		} else {
+			flag.StringVar(&kubeconfig, "kubeconfig", "~/.kube/config", "absolute path to the kubeconfig file")
+		}
+	*/
 
+	flag.StringVar(&kubeconfig, "kubeconfig", "config", "absolute path to the kubeconfig file")
+
+	flag.Parse()
+
+}
+
+func checkifPodExists(client *kubernetes.Clientset, opts *ExecOptions) error {
+	pod, err := client.CoreV1().Pods(opts.Namespace).Get(context.TODO(), opts.Pod, metav1.GetOptions{})
+	if pod.Status.Phase == "Running" {
+		return nil
+	}
+	return err
+}
+func hostToClientKubernetes(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer cancel()
+	for {
+		r, err := getNextReader(ctx, podConn)
+		if err != nil {
+			if err := clientConn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
+			} else if err != nil {
+				log.Printf("Error sending close message: %v", err)
+			}
+			return
+		}
+		if r == nil {
+			return
+		}
+		var buf []byte
+		buf = make([]byte, 1024, 10*1024)
+		readBytes, err := r.Read(buf)
+		if err != nil {
+			log.Println(err)
+		}
+
+		if readBytes > 1 {
+			switch buf[0] {
+			case 1:
+				buf[0] = 0
+				s := strings.Replace(string(buf[1:]), cacheBuff.String(), "", -1)
+				clientConn.WriteMessage(websocket.BinaryMessage, []byte(s))
+			}
+			cacheBuff.Reset()
+			cacheBuff.Write([]byte{0})
+		}
+	}
+}
+
+func clientToHostKubernetes(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer cancel()
+	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	clientConn.SetPongHandler(func(string) error { clientConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	podConn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	podConn.SetPongHandler(func(string) error { podConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	for {
+		r, err := getNextReader(ctx, clientConn)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		if r == nil {
+			return
+		}
+		dataTypeBuf := make([]byte, 2)
+		_, err = r.Read(dataTypeBuf)
+
+		switch dataTypeBuf[0] {
+		case 0:
+			data := dataTypeBuf[1:]
+			dataLength := len(data)
+			if dataLength == -1 {
+				log.Println("failed to get the correct number of bytes read, ignoring message")
+				continue
+			}
+			if bytes.Contains(data, newline) {
+				cacheBuff.Write(carriageReturn)
+				cacheBuff.Write(newline)
+			} else {
+				cacheBuff.Write(data)
+			}
+			err := podConn.WriteMessage(websocket.BinaryMessage, cacheBuff.Bytes())
+			if err != nil {
+				log.Printf("failed to write %v bytes to tty: %s", len(data), err)
+			}
+			cacheBuff.Reset()
+			cacheBuff.Write([]byte{0})
+		case 1:
+			continue
+		}
+	}
+}
+
+func KubeSetup(vars map[string]string) (*websocket.Conn, *http.Response, error) {
+	name := vars["name"]
+	opts := &ExecOptions{
+		Namespace: "default",
+		Pod:       name,
+		Container: name,
+		Command:   []string{"/bin/bash"},
+		Stdin:     true,
+		TTY:       true,
+	}
+	base_address := "http://192.168.1.14:8200"
+	kubernetesSecretsURI := fmt.Sprintf("/v1/%s/data/mist/clouds/%s", vars["vault_secret_engine_path"], vars["cluster"])
+	vault := Vault{
+		address:    base_address,
+		secretPath: kubernetesSecretsURI,
+		token:      vars["vault_token"],
+	}
+	KubernetesConfigCredentials, err := GetKubernetesConfigCredentials(vault)
+	if err != nil {
+		return nil, nil, err
+	}
+	// read file from templates directory
+	configTemplate := KubeConfigTemplate{
+		Certificate_authority_data: KubernetesConfigCredentials.Ca_cert_file,
+		Server:                     "https://" + KubernetesConfigCredentials.Host + ":" + KubernetesConfigCredentials.Port,
+		User:                       vars["user"],
+		Cluster:                    "kubernetes",
+		Context_name:               vars["user"] + "@" + "kubernetes",
+		Client_certificate_data:    KubernetesConfigCredentials.Cert_file,
+		Client_key_data:            KubernetesConfigCredentials.Key_file,
+	}
+	configFile, err := os.Create("kubeconfig.txt")
+	if err != nil {
+		log.Println(err)
+		return nil, nil, err
+	}
+	defer configFile.Close()
+	var temp *template.Template
+	// read kube_config string
+	temp, err = template.New("").Parse(kube_config_template)
+	err = temp.Execute(configFile, configTemplate)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	log.Print("kubeconfig.txt created")
+	parseKubeConfig()
+	config, err := clientcmd.BuildConfigFromFlags("", "kubeconfig.txt")
+	if err != nil {
+		log.Fatalln(err)
+	}
+	clientSet, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
+	err = checkifPodExists(clientSet, opts)
+	if err != nil {
+		panic(err.Error())
+	}
+	req, err := k8s_ExecRequest(config, opts)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	tlsConfig, err := rest.TLSConfigFor(config)
+	dialer := &websocket.Dialer{
+		TLSClientConfig: tlsConfig,
+		Subprotocols:    KubeProtocols,
+	}
+	podConn, Response, err := dialer.Dial(req.URL.String(), req.Header)
+	if err != nil {
+		log.Println(err)
+	}
+	return podConn, Response, err
+}
+
+func handleKubernetes(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Print(err)
+	}
+	cacheBuff.Write([]byte{0})
+	vars := mux.Vars(r)
+	// WON'T WORK
+	// SOCAT GIVES YOU IP:PORT BUT PORT IS 80 NOT 2375
+	podConn, _, err := KubeSetup(vars)
+	defer podConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	go hostToClientKubernetes(ctx, cancel, clientConn, podConn, &wg)
+	go clientToHostKubernetes(ctx, cancel, clientConn, podConn, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, podConn, &wg)
+	wg.Wait()
+}
+func handleDocker(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	log.Print(vars)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Print(err)
+	}
+	cacheBuff.Write([]byte{0})
+	// default websocket dialer
+	dialer := websocket.DefaultDialer
+	opts := &DockerExecOptions{
+		Host:    vars["host"],
+		Port:    vars["port"],
+		Name:    vars["name"],
+		Cluster: vars["cluster"],
+	}
+	req, err := docker_ExecRequest(opts)
+	podConn, _, err := dialer.Dial(req.URL.String(), req.Header)
+
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer podConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	go hostToClientKubernetes(ctx, cancel, clientConn, podConn, &wg)
+	go clientToHostKubernetes(ctx, cancel, clientConn, podConn, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, podConn, &wg)
+	wg.Wait()
+}
 func main() {
 	flag.Parse()
 
@@ -719,7 +1091,9 @@ func main() {
 
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
-	m.HandleFunc("/ssh/{user}/{host}/{port}/{key}/{expiry}/{mac}", handleSSH)
+	m.HandleFunc("/k8s-exec/{name}/{cluster}/{user}/{vault_token}/{vault_secret_engine_path}/{key_name}", handleKubernetes)
+	m.HandleFunc("/docker-exec/{host}/{port}/{machine_id}/{name}/{cluster}/{user}/{vault_token}/{vault_secret_engine_path}/{key_name}", handleDocker)
+	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{vault_token}/{vault_secret_engine_path}/{key_name}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{key}/{host}/{port}/{expiry}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,
