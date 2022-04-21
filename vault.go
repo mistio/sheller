@@ -31,6 +31,15 @@ type KubernetesConfigCredentials struct {
 	Key_file     string
 	Host         string
 	Port         string
+	//user
+	//context
+}
+type DockerConfigCredentials struct {
+	Ca_cert_file string
+	Cert_file    string
+	Key_file     string
+	Host         string
+	Port         string
 }
 
 type result map[string]map[string]map[string]string
@@ -49,10 +58,23 @@ func unmarshalKubernetesConfigCredentials(r result) (KubernetesConfigCredentials
 	Result := func(value string) string {
 		return r["data"]["data"][value]
 	}
-
 	c.Ca_cert_file = b64.StdEncoding.EncodeToString([]byte(Result("ca_cert_file")))
 	c.Cert_file = b64.StdEncoding.EncodeToString([]byte(Result("cert_file")))
 	c.Key_file = b64.StdEncoding.EncodeToString([]byte(Result("key_file")))
+	c.Host = Result("host")
+	c.Port = Result("port")
+	return c, nil
+}
+func unmarshalDockerConfigCredentials(r result) (DockerConfigCredentials, error) {
+	var c DockerConfigCredentials
+	Result := func(value string) string {
+		// add a new line to the end of the string
+		return r["data"]["data"][value] + "\n"
+	}
+
+	c.Ca_cert_file = Result("ca_cert_file")
+	c.Cert_file = Result("cert_file")
+	c.Key_file = Result("key_file")
 	c.Host = Result("host")
 	c.Port = Result("port")
 	return c, nil
@@ -107,5 +129,25 @@ func GetKubernetesConfigCredentials(v Vault) (KubernetesConfigCredentials, error
 	decoder := json.NewDecoder(resp.Body)
 	decoder.Decode(&r)
 	credentials, err := unmarshalKubernetesConfigCredentials(r)
+	return credentials, nil
+}
+
+func GetDockerConfigCredentials(v Vault) (DockerConfigCredentials, error) {
+	uri := v.address + v.secretPath
+	req, err := http.NewRequest("GET", uri, nil)
+	if err != nil {
+		log.Fatal(err)
+		return DockerConfigCredentials{}, err
+	}
+	req.Header.Set("X-Vault-Token", v.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatal(err)
+		return DockerConfigCredentials{}, err
+	}
+	var r result
+	decoder := json.NewDecoder(resp.Body)
+	decoder.Decode(&r)
+	credentials, err := unmarshalDockerConfigCredentials(r)
 	return credentials, nil
 }

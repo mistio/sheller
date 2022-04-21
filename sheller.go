@@ -19,6 +19,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -198,7 +199,7 @@ func docker_ExecRequest(opts *DockerExecOptions) (*http.Request, error) {
 	}
 
 	u.Path = fmt.Sprintf("/containers/%s/attach/ws", opts.Machine_id)
-	u.RawQuery = "logs=1&stream=1&stdin=1&stdout=1&stderr=1"
+	u.RawQuery = "logs=1&stream=0&stdin=1&stdout=1&stderr=1"
 
 	return &http.Request{
 		Method: http.MethodGet,
@@ -867,7 +868,7 @@ func checkifPodExists(client *kubernetes.Clientset, opts *ExecOptions) error {
 	}
 	return err
 }
-func hostToClientKubernetes(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
+func hostToClientContainer(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
 	for {
@@ -904,13 +905,14 @@ func hostToClientKubernetes(ctx context.Context, cancel context.CancelFunc, clie
 	}
 }
 
-func clientToHostKubernetes(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
+func clientToHostContainer(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
 	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	clientConn.SetPongHandler(func(string) error { clientConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	podConn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	podConn.SetPongHandler(func(string) error { podConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	log.Print("it go brrrr")
 	for {
 		r, err := getNextReader(ctx, clientConn)
 		if err != nil {
@@ -1011,6 +1013,8 @@ func KubeSetup(vars map[string]string) (*websocket.Conn, *http.Response, error) 
 	if err != nil {
 		log.Fatalln(err)
 	}
+	// create an http post request
+
 	tlsConfig, err := rest.TLSConfigFor(config)
 	dialer := &websocket.Dialer{
 		TLSClientConfig: tlsConfig,
@@ -1032,14 +1036,12 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheBuff.Write([]byte{0})
 	vars := mux.Vars(r)
-	// WON'T WORK
-	// SOCAT GIVES YOU IP:PORT BUT PORT IS 80 NOT 2375
 	podConn, _, err := KubeSetup(vars)
 	defer podConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
-	go hostToClientKubernetes(ctx, cancel, clientConn, podConn, &wg)
-	go clientToHostKubernetes(ctx, cancel, clientConn, podConn, &wg)
+	go hostToClientContainer(ctx, cancel, clientConn, podConn, &wg)
+	go clientToHostContainer(ctx, cancel, clientConn, podConn, &wg)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, podConn, &wg)
 	wg.Wait()
@@ -1054,25 +1056,46 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 		fmt.Print(err)
 	}
 	cacheBuff.Write([]byte{0})
-	// default websocket dialer
-	dialer := websocket.DefaultDialer
+	base_address := "http://192.168.1.14:8200"
+	dockerSecretsURI := fmt.Sprintf("/v1/%s/data/mist/clouds/%s", vars["vault_secret_engine_path"], vars["cluster"])
+	vault := Vault{
+		address:    base_address,
+		secretPath: dockerSecretsURI,
+		token:      vars["vault_token"],
+	}
+	DockerConfigCredentials, err := GetDockerConfigCredentials(vault)
 	opts := &DockerExecOptions{
-		Host:    vars["host"],
-		Port:    vars["port"],
-		Name:    vars["name"],
-		Cluster: vars["cluster"],
+		Host:       DockerConfigCredentials.Host,
+		Port:       DockerConfigCredentials.Port,
+		Machine_id: vars["machine_id"],
+		Name:       vars["name"],
+		Cluster:    vars["cluster"],
+	}
+	cert, err := tls.X509KeyPair([]byte(DockerConfigCredentials.Cert_file), []byte(DockerConfigCredentials.Key_file))
+	if err != nil {
+		log.Fatal(err)
+	}
+	certPool := x509.NewCertPool()
+	certPool.AppendCertsFromPEM([]byte(DockerConfigCredentials.Ca_cert_file))
+	cfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      certPool,
+	}
+	dialer := &websocket.Dialer{
+		TLSClientConfig: cfg,
 	}
 	req, err := docker_ExecRequest(opts)
-	podConn, _, err := dialer.Dial(req.URL.String(), req.Header)
-
+	// DOESN'T WORK
+	podConn, d, err := dialer.Dial(req.URL.String(), req.Header)
 	if err != nil {
 		log.Fatalln(err)
 	}
+	log.Print(d.Body)
 	defer podConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
-	go hostToClientKubernetes(ctx, cancel, clientConn, podConn, &wg)
-	go clientToHostKubernetes(ctx, cancel, clientConn, podConn, &wg)
+	go hostToClientContainer(ctx, cancel, clientConn, podConn, &wg)
+	go clientToHostContainer(ctx, cancel, clientConn, podConn, &wg)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, podConn, &wg)
 	wg.Wait()
