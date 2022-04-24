@@ -26,8 +26,6 @@ import (
 	"flag"
 	"fmt"
 	"hash"
-	"text/template"
-
 	"io"
 	"io/ioutil"
 	"log"
@@ -35,12 +33,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	cryptoSheller "sheller/crypto"
+	sheller "sheller/lib"
 	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
-
-	sheller "sheller/lib"
 
 	"github.com/elliotchance/sshtunnel"
 	"github.com/gorilla/mux"
@@ -186,9 +185,8 @@ type DockerExecOptions struct {
 func docker_ExecRequest(opts *DockerExecOptions) (*http.Request, error) {
 	//create empty url to be populated
 	u := &url.URL{}
-	u.Scheme = "http"
+	u.Scheme = "https"
 	u.Host = opts.Host + ":" + opts.Port
-
 	switch u.Scheme {
 	case "https":
 		u.Scheme = "wss"
@@ -199,7 +197,7 @@ func docker_ExecRequest(opts *DockerExecOptions) (*http.Request, error) {
 	}
 
 	u.Path = fmt.Sprintf("/containers/%s/attach/ws", opts.Machine_id)
-	u.RawQuery = "logs=1&stream=0&stdin=1&stdout=1&stderr=1"
+	u.RawQuery = "logs=1&stdin=1&stdout=1"
 
 	return &http.Request{
 		Method: http.MethodGet,
@@ -686,23 +684,22 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	host := vars["host"]
 	port := vars["port"]
 	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
-	vault_token := vars["vault_token"]
-	vault_secret_engine_path := vars["vault_secret_engine_path"]
-	key_name := vars["key_name"]
 	vault_addr := os.Getenv("VAULT_ADDR")
 	mac := vars["mac"]
-	path := fmt.Sprintf("/v1/%s/data/mist/keys/%s", vault_secret_engine_path, key_name)
-	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
-	// Write Data to it
-	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vault_token + "," + vault_secret_engine_path + "," + key_name))
-
+	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != mac {
+		panic("HMAC MISMATCH")
+	}
+	decryptedMessage := cryptoSheller.Decrypt(vars["encrypted_msg"], "")
+	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
 	vault := Vault{
 		address:    vault_addr,
-		secretPath: path,
-		token:      vault_token,
+		secretPath: fmt.Sprintf("/v1/%s/data/mist/keys/%s", plaintextParts[1], plaintextParts[2]),
+		token:      plaintextParts[0],
 	}
-	priv, err := GetPrivateKey(vault, h, mac, expiry)
+	priv, err := GetPrivateKey(vault, expiry)
 	if err != nil {
 		log.Println(err)
 		return
@@ -891,7 +888,6 @@ func hostToClientContainer(ctx context.Context, cancel context.CancelFunc, clien
 		if err != nil {
 			log.Println(err)
 		}
-
 		if readBytes > 1 {
 			switch buf[0] {
 			case 1:
@@ -912,7 +908,6 @@ func clientToHostContainer(ctx context.Context, cancel context.CancelFunc, clien
 	clientConn.SetPongHandler(func(string) error { clientConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	podConn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	podConn.SetPongHandler(func(string) error { podConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
-	log.Print("it go brrrr")
 	for {
 		r, err := getNextReader(ctx, clientConn)
 		if err != nil {
@@ -961,7 +956,7 @@ func KubeSetup(vars map[string]string) (*websocket.Conn, *http.Response, error) 
 		Stdin:     true,
 		TTY:       true,
 	}
-	base_address := "http://192.168.1.14:8200"
+	base_address := os.Getenv("VAULT_ADDR")
 	kubernetesSecretsURI := fmt.Sprintf("/v1/%s/data/mist/clouds/%s", vars["vault_secret_engine_path"], vars["cluster"])
 	vault := Vault{
 		address:    base_address,
@@ -1056,7 +1051,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 		fmt.Print(err)
 	}
 	cacheBuff.Write([]byte{0})
-	base_address := "http://192.168.1.14:8200"
+	base_address := os.Getenv("VAULT_ADDR")
 	dockerSecretsURI := fmt.Sprintf("/v1/%s/data/mist/clouds/%s", vars["vault_secret_engine_path"], vars["cluster"])
 	vault := Vault{
 		address:    base_address,
@@ -1082,10 +1077,12 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 		RootCAs:      certPool,
 	}
 	dialer := &websocket.Dialer{
+		Proxy:            http.ProxyFromEnvironment,
+		HandshakeTimeout: 2 * time.Second,
+
 		TLSClientConfig: cfg,
 	}
 	req, err := docker_ExecRequest(opts)
-	// DOESN'T WORK
 	podConn, d, err := dialer.Dial(req.URL.String(), req.Header)
 	if err != nil {
 		log.Fatalln(err)
@@ -1094,6 +1091,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	defer podConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
+	// reaches here but does nothing inside the goroutines below
 	go hostToClientContainer(ctx, cancel, clientConn, podConn, &wg)
 	go clientToHostContainer(ctx, cancel, clientConn, podConn, &wg)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
@@ -1116,7 +1114,7 @@ func main() {
 	m := mux.NewRouter()
 	m.HandleFunc("/k8s-exec/{name}/{cluster}/{user}/{vault_token}/{vault_secret_engine_path}/{key_name}", handleKubernetes)
 	m.HandleFunc("/docker-exec/{host}/{port}/{machine_id}/{name}/{cluster}/{user}/{vault_token}/{vault_secret_engine_path}/{key_name}", handleDocker)
-	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{vault_token}/{vault_secret_engine_path}/{key_name}/{mac}", handleSSH)
+	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{key}/{host}/{port}/{expiry}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,

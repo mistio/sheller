@@ -2,10 +2,8 @@ package main
 
 import (
 	b64 "encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"hash"
 	"log"
 	"net/http"
 	"strings"
@@ -79,11 +77,7 @@ func unmarshalDockerConfigCredentials(r result) (DockerConfigCredentials, error)
 	c.Port = Result("port")
 	return c, nil
 }
-func GetPrivateKey(v Vault, h hash.Hash, mac string, expiry int64) (ssh.AuthMethod, error) {
-	sha := hex.EncodeToString(h.Sum(nil))
-	if sha != mac {
-		return nil, errors.New("HMAC mismatch")
-	}
+func GetPrivateKey(v Vault, expiry int64) (ssh.AuthMethod, error) {
 
 	if expiry < time.Now().Unix() {
 		return nil, errors.New("Session expired")

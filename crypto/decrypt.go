@@ -1,10 +1,14 @@
 package crypto
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/hex"
 	"os"
+
+	"google.golang.org/appengine/log"
 )
 
 func PKCS5UnPadding(src []byte) []byte {
@@ -12,10 +16,16 @@ func PKCS5UnPadding(src []byte) []byte {
 	unpadding := int(src[length-1])
 	return src[:(length - unpadding)]
 }
-func decrypt(ciphertext string, no_iv bool) string {
+func Decrypt(ciphertext, salt string) string {
+
+	h := sha256.New()
 	// have to check if the secret is hex encoded
-	key := []byte(os.Getenv("SECRET"))
-	ciphertext_bytes, _ := hex.DecodeString(ciphertext)
+	h.Write([]byte(os.Getenv("SECRET") + salt))
+	key := h.Sum(nil)
+	ciphertext_bytes, err := hex.DecodeString(ciphertext)
+	if err != nil {
+		log.Errorf(context.TODO(), "error decoding ciphertext: %v", err)
+	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		panic(err)
@@ -29,6 +39,6 @@ func decrypt(ciphertext string, no_iv bool) string {
 	ciphertext_bytes = ciphertext_bytes[aes.BlockSize:]
 	stream := cipher.NewCFBDecrypter(block, iv)
 	stream.XORKeyStream(ciphertext_bytes, ciphertext_bytes)
-	plaintext := string(PKCS5UnPadding(ciphertext_bytes))
-	return plaintext
+	plaintext := PKCS5UnPadding(ciphertext_bytes)
+	return string(plaintext)
 }
