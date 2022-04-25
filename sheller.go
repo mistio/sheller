@@ -84,27 +84,15 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 		fmt.Print(err)
 	}
 	cacheBuff.Write([]byte{0})
-	cfg, opts, err := config.DockerCfg(vars)
-	dialer := &websocket.Dialer{
-		Proxy:            http.ProxyFromEnvironment,
-		HandshakeTimeout: 2 * time.Second,
-
-		TLSClientConfig: cfg,
-	}
-	req, err := config.DockerExecRequest(opts)
-	podConn, d, err := dialer.Dial(req.URL.String(), req.Header)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	log.Print(d.Body)
-	defer podConn.Close()
+	containerConn, _, err := config.DockerCfg(vars)
+	defer containerConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
 	// reaches here but does nothing inside the goroutines below
-	go hostToClientContainer(ctx, cancel, clientConn, podConn, &wg)
-	go clientToHostContainer(ctx, cancel, clientConn, podConn, &wg)
+	go hostToClientContainer(ctx, cancel, clientConn, containerConn, &wg)
+	go clientToHostContainer(ctx, cancel, clientConn, containerConn, &wg)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
-	go pingWebsocket(ctx, cancel, podConn, &wg)
+	go pingWebsocket(ctx, cancel, containerConn, &wg)
 	wg.Wait()
 }
 

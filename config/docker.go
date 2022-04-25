@@ -18,6 +18,9 @@ import (
 	"sheller/types/vault"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func DockerExecRequest(opts *docker.AttachOptions) (*http.Request, error) {
@@ -44,7 +47,7 @@ func DockerExecRequest(opts *docker.AttachOptions) (*http.Request, error) {
 	}, nil
 }
 
-func DockerCfg(vars map[string]string) (*tls.Config, *docker.AttachOptions, error) {
+func DockerCfg(vars map[string]string) (*websocket.Conn, *http.Response, error) {
 	name := vars["name"]
 	cluster := vars["cluster"]
 	host := vars["host"]
@@ -90,5 +93,16 @@ func DockerCfg(vars map[string]string) (*tls.Config, *docker.AttachOptions, erro
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      certPool,
 	}
-	return cfg, opts, nil
+	dialer := &websocket.Dialer{
+		Proxy:            http.ProxyFromEnvironment,
+		HandshakeTimeout: 2 * time.Second,
+
+		TLSClientConfig: cfg,
+	}
+	req, err := DockerExecRequest(opts)
+	podConn, Response, err := dialer.Dial(req.URL.String(), req.Header)
+	if err != nil {
+		return nil, nil, err
+	}
+	return podConn, Response, nil
 }
