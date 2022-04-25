@@ -948,6 +948,9 @@ func clientToHostContainer(ctx context.Context, cancel context.CancelFunc, clien
 
 func KubeSetup(vars map[string]string) (*websocket.Conn, *http.Response, error) {
 	name := vars["name"]
+	cluster := vars["cluster"]
+	user := vars["user"]
+	encrypted_msg := vars["encrypted_msg"]
 	opts := &ExecOptions{
 		Namespace: "default",
 		Pod:       name,
@@ -957,13 +960,23 @@ func KubeSetup(vars map[string]string) (*websocket.Conn, *http.Response, error) 
 		TTY:       true,
 	}
 	base_address := os.Getenv("VAULT_ADDR")
-	kubernetesSecretsURI := fmt.Sprintf("/v1/%s/data/mist/clouds/%s", vars["vault_secret_engine_path"], vars["cluster"])
+	mac := vars["mac"]
+	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
+	h.Write([]byte(name + "," + cluster + "," + user + "," + vars["expiry"] + "," + encrypted_msg))
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != mac {
+		panic("HMAC MISMATCH")
+	}
+	decryptedMessage := cryptoSheller.Decrypt(vars["encrypted_msg"], "")
+	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
+	kubernetesSecretsURI := fmt.Sprintf("/v1/%s/data/mist/clouds/%s", plaintextParts[1], plaintextParts[2])
 	vault := Vault{
 		address:    base_address,
 		secretPath: kubernetesSecretsURI,
-		token:      vars["vault_token"],
+		token:      plaintextParts[0],
 	}
-	KubernetesConfigCredentials, err := GetKubernetesConfigCredentials(vault)
+	KubernetesConfigCredentials, err := GetKubernetesConfigCredentials(vault, expiry)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1051,18 +1064,33 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 		fmt.Print(err)
 	}
 	cacheBuff.Write([]byte{0})
+	name := vars["name"]
+	cluster := vars["cluster"]
+	host := vars["host"]
+	port := vars["port"]
+	encrypted_msg := vars["encrypted_msg"]
+	mac := vars["mac"]
 	base_address := os.Getenv("VAULT_ADDR")
-	dockerSecretsURI := fmt.Sprintf("/v1/%s/data/mist/clouds/%s", vars["vault_secret_engine_path"], vars["cluster"])
+	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
+	h.Write([]byte(name + "," + cluster + "," + host + "," + port + "," + vars["user"] + "," + vars["expiry"] + "," + encrypted_msg))
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != mac {
+		panic("HMAC MISMATCH")
+	}
+	decryptedMessage := cryptoSheller.Decrypt(vars["encrypted_msg"], "")
+	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
+	dockerSecretsURI := fmt.Sprintf("/v1/%s/data/mist/clouds/%s", plaintextParts[1], vars["cluster"])
 	vault := Vault{
 		address:    base_address,
 		secretPath: dockerSecretsURI,
-		token:      vars["vault_token"],
+		token:      plaintextParts[0],
 	}
-	DockerConfigCredentials, err := GetDockerConfigCredentials(vault)
+	DockerConfigCredentials, err := GetDockerConfigCredentials(vault, expiry)
 	opts := &DockerExecOptions{
 		Host:       DockerConfigCredentials.Host,
 		Port:       DockerConfigCredentials.Port,
-		Machine_id: vars["machine_id"],
+		Machine_id: plaintextParts[3],
 		Name:       vars["name"],
 		Cluster:    vars["cluster"],
 	}
@@ -1112,8 +1140,8 @@ func main() {
 
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
-	m.HandleFunc("/k8s-exec/{name}/{cluster}/{user}/{vault_token}/{vault_secret_engine_path}/{key_name}", handleKubernetes)
-	m.HandleFunc("/docker-exec/{host}/{port}/{machine_id}/{name}/{cluster}/{user}/{vault_token}/{vault_secret_engine_path}/{key_name}", handleDocker)
+	m.HandleFunc("/k8s-exec/{name}/{cluster}/{user}/{expiry}/{encrypted_msg}/{mac}", handleKubernetes)
+	m.HandleFunc("/docker-exec/{name}/{cluster}/{host}/{port}/{user}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{key}/{host}/{port}/{expiry}/{mac}", handleVNC)
 	s := &http.Server{

@@ -106,7 +106,10 @@ func GetPrivateKey(v Vault, expiry int64) (ssh.AuthMethod, error) {
 	}
 	return ssh.PublicKeys(priv), nil
 }
-func GetKubernetesConfigCredentials(v Vault) (KubernetesConfigCredentials, error) {
+func GetKubernetesConfigCredentials(v Vault, expiry int64) (KubernetesConfigCredentials, error) {
+	if expiry < time.Now().Unix() {
+		return KubernetesConfigCredentials{}, errors.New("Session expired")
+	}
 	uri := v.address + v.secretPath
 	req, err := http.NewRequest("GET", uri, nil)
 	if err != nil {
@@ -126,7 +129,10 @@ func GetKubernetesConfigCredentials(v Vault) (KubernetesConfigCredentials, error
 	return credentials, nil
 }
 
-func GetDockerConfigCredentials(v Vault) (DockerConfigCredentials, error) {
+func GetDockerConfigCredentials(v Vault, expiry int64) (DockerConfigCredentials, error) {
+	if expiry < time.Now().Unix() {
+		return DockerConfigCredentials{}, errors.New("Session expired")
+	}
 	uri := v.address + v.secretPath
 	req, err := http.NewRequest("GET", uri, nil)
 	if err != nil {
