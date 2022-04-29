@@ -1,9 +1,8 @@
-// Package crypto provides encryption and decryption methods . The encryption is symmetric thus the key needs to
-// be known to both the receiver and the sender of the secret.
-package crypto
+package conceal
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -11,6 +10,8 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
+
+	"google.golang.org/appengine/log"
 )
 
 // PKCS5Padding adds padding to the plaintext to make it a multiple of the block size
@@ -29,7 +30,7 @@ func Encrypt(plaintext, salt string) string {
 	plaintextBytes := PKCS5Padding([]byte(plaintext), aes.BlockSize)
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		panic(err)
+		log.Errorf(context.TODO(), "error creating cipher block: %v", err)
 	}
 	// The IV needs to be unique, but not secure. Therefore it's common to
 	// include it at the beginning of the ciphertext.

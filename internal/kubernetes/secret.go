@@ -1,15 +1,13 @@
 package kubernetes
 
-type Tls struct {
-	CA   string
-	Cert string
-	Key  string
-}
+import "sheller/util/tls"
 
-type SecretWithTls struct {
-	Tls  Tls
+type secretWithTls struct {
+	Tls  tls.Tls
 	Host string
 	Port string
+	// user string
+	// context string
 }
 
 /*

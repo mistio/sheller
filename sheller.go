@@ -27,13 +27,13 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sheller/config"
-	cryptoSheller "sheller/crypto"
-	"sheller/ioutils"
+	"sheller/internal/docker"
+	k8s "sheller/internal/kubernetes"
+	"sheller/internal/machine"
 	sheller "sheller/lib"
-	"sheller/secret"
-	machineSSH "sheller/types/ssh"
-	"sheller/types/vault"
+	conceal "sheller/util/conceal"
+	shellerio "sheller/util/io"
+	"sheller/util/secret/vault"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,7 +54,6 @@ var (
 	// Send pings to peer with this period. Must be less than pongTimeout.
 	pingPeriod = (*pongTimeout * 9) / 10
 	cacheBuff  bytes.Buffer
-	kubeconfig string
 	upgrader   websocket.Upgrader
 )
 
@@ -84,7 +83,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 		fmt.Print(err)
 	}
 	cacheBuff.Write([]byte{0})
-	containerConn, _, err := config.DockerCfg(vars)
+	containerConn, _, err := docker.Cfg(vars)
 	defer containerConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
@@ -100,7 +99,7 @@ func hostToClientContainer(ctx context.Context, cancel context.CancelFunc, clien
 	defer wg.Done()
 	defer cancel()
 	for {
-		r, err := ioutils.GetNextReader(ctx, podConn)
+		r, err := shellerio.GetNextReader(ctx, podConn)
 		if err != nil {
 			if err := clientConn.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
@@ -140,7 +139,7 @@ func clientToHostContainer(ctx context.Context, cancel context.CancelFunc, clien
 	podConn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	podConn.SetPongHandler(func(string) error { podConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := ioutils.GetNextReader(ctx, clientConn)
+		r, err := shellerio.GetNextReader(ctx, clientConn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -186,7 +185,7 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheBuff.Write([]byte{0})
 	vars := mux.Vars(r)
-	podConn, _, err := config.KubernetesCfg(vars)
+	podConn, _, err := k8s.Cfg(vars)
 	if err != nil {
 		log.Println(err)
 		return
@@ -205,7 +204,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	vars := mux.Vars(r)
-	config, err := config.MachineSSHCfg(vars)
+	config, err := machine.SHHCfg(vars)
 	if err != nil {
 		fmt.Print(err)
 	}
@@ -241,7 +240,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		log.Println("Failed to create stdoutpipe: " + err.Error())
 		return
 	}
-	remoteStdout = ioutils.NewCancelableReader(ctx, remoteStdout)
+	remoteStdout = shellerio.NewCancelableReader(ctx, remoteStdout)
 
 	err = startSSH(session)
 	if err != nil {
@@ -296,7 +295,7 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := ioutils.GetNextReader(ctx, conn)
+		r, err := shellerio.GetNextReader(ctx, conn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -319,7 +318,7 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 			}
 		case 1:
 			decoder := json.NewDecoder(r)
-			resizeMessage := machineSSH.TerminalSize{}
+			resizeMessage := machine.TerminalSize{}
 			err := decoder.Decode(&resizeMessage)
 			if err != nil {
 				log.Println(err)
@@ -354,7 +353,7 @@ func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := ioutils.GetNextReader(ctx, conn)
+		r, err := shellerio.GetNextReader(ctx, conn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -407,19 +406,29 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	if sha != mac {
 		panic("HMAC MISMATCH")
 	}
-	decryptedMessage := cryptoSheller.Decrypt(vars["encrypted_msg"], "")
+	decryptedMessage := conceal.Decrypt(vars["encrypted_msg"], "")
 	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
 	token := plaintextParts[0]
 	secretPath := plaintextParts[1]
 	keyName := plaintextParts[2]
-	vault := vault.AccessWithToken{
+	vaultConfig := vault.AccessWithToken{
 		Vault: vault.Vault{
 			Address:    os.Getenv("VAULT_ADDR"),
 			SecretPath: fmt.Sprintf("/v1/%s/data/mist/keys/%s", secretPath, keyName),
 		},
 		Token: token,
 	}
-	priv, err := secret.KeyPairRequest(vault, expiry)
+	secretData, err := vault.SecretRequest(vaultConfig, expiry)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	kPair, err := machine.UnmarshalSecret(secretData)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	priv, err := machine.AuthMethod(kPair)
 	if err != nil {
 		log.Println(err)
 		return

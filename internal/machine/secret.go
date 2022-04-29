@@ -1,4 +1,4 @@
-package MachineSSH
+package machine
 
 type KeyPair struct {
 	PublicKey  string
