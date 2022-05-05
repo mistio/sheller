@@ -1,9 +1,8 @@
 package lxd
 
-import "sheller/util/tls"
-
 type secretWithTls struct {
-	Tls  tls.Tls
+	Cert string
+	Key  string
 	Host string
 	Port string
 }

@@ -46,8 +46,8 @@ func Cfg(vars map[string]string) (*websocket.Conn, error) {
 		return nil, err
 	}
 	ConnArgs := &lxd.ConnectionArgs{
-		TLSClientCert:      SecretWithTls.Tls.Cert,
-		TLSClientKey:       SecretWithTls.Tls.Key,
+		TLSClientCert:      SecretWithTls.Cert,
+		TLSClientKey:       SecretWithTls.Key,
 		InsecureSkipVerify: true,
 	}
 	// use host:port as the address
@@ -58,8 +58,10 @@ func Cfg(vars map[string]string) (*websocket.Conn, error) {
 	}
 
 	// Setup the exec request
+	// not sure about environment
 	req := api.ContainerExecPost{
-		Command:     []string{"/bin/sh", "-c", "echo $TERM"},
+		Command:     []string{"/bin/bash"},
+		Interactive: true,
 		WaitForWS:   true,
 		Environment: map[string]string{"TERM": "xterm"},
 	}
@@ -69,7 +71,10 @@ func Cfg(vars map[string]string) (*websocket.Conn, error) {
 	}
 	secretFDS := op.Get().Metadata["fds"]
 	// convert secret to map[string]string
-	secret, _ := secretFDS.(map[string]string)
-	secret_0 := secret["0"]
-	return op.GetWebsocket(secret_0)
+	secret, ok := secretFDS.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("failed to convert secret to map[string]string")
+	}
+	secret_0 := secret["0"].(string)
+	return c.GetOperationWebsocket(op.Get().ID, secret_0)
 }

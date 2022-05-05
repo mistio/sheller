@@ -29,6 +29,7 @@ import (
 	"os"
 	"sheller/internal/docker"
 	k8s "sheller/internal/kubernetes"
+	"sheller/internal/lxd"
 	"sheller/internal/machine"
 	sheller "sheller/lib"
 	conceal "sheller/util/conceal"
@@ -73,17 +74,21 @@ const (
 	stderr
 )
 
-func handleDocker(w http.ResponseWriter, r *http.Request) {
+func handleLXD(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	log.Print(vars)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		fmt.Print(err)
+		log.Print(err)
 	}
 	cacheBuff.Write([]byte{0})
-	containerConn, _, err := docker.Cfg(vars)
+	containerConn, err := lxd.Cfg(vars)
+	if err != nil {
+		log.Print(err)
+		return
+	}
 	defer containerConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
@@ -95,11 +100,44 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 }
 
-func hostToClientContainer(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
+func handleDocker(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	log.Print(vars)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print(err)
+	}
+	cacheBuff.Write([]byte{0})
+	containerConn, _, err := docker.Cfg(vars)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	defer containerConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	// reaches here but does nothing inside the goroutines below
+	go hostToClientContainer(ctx, cancel, clientConn, containerConn, &wg)
+	go clientToHostContainer(ctx, cancel, clientConn, containerConn, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, containerConn, &wg)
+	wg.Wait()
+}
+
+func hostToClientContainer(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
 	for {
-		r, err := shellerio.GetNextReader(ctx, podConn)
+		msgtype, msg, err := containerConn.ReadMessage()
+		if err != nil {
+			log.Print(err)
+		}
+		fmt.Print(msgtype)
+		fmt.Print(msg)
+
+		r, err := shellerio.GetNextReader(ctx, containerConn)
 		if err != nil {
 			if err := clientConn.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
@@ -118,6 +156,7 @@ func hostToClientContainer(ctx context.Context, cancel context.CancelFunc, clien
 		if err != nil {
 			log.Println(err)
 		}
+		log.Printf("%s", cacheBuff.String())
 		if readBytes > 1 {
 			switch buf[0] {
 			case 1:
@@ -131,13 +170,13 @@ func hostToClientContainer(ctx context.Context, cancel context.CancelFunc, clien
 	}
 }
 
-func clientToHostContainer(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, podConn *websocket.Conn, wg *sync.WaitGroup) {
+func clientToHostContainer(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
 	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	clientConn.SetPongHandler(func(string) error { clientConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
-	podConn.SetReadDeadline(time.Now().Add(*pongTimeout))
-	podConn.SetPongHandler(func(string) error { podConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	containerConn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	containerConn.SetPongHandler(func(string) error { containerConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
 		r, err := shellerio.GetNextReader(ctx, clientConn)
 		if err != nil {
@@ -149,7 +188,6 @@ func clientToHostContainer(ctx context.Context, cancel context.CancelFunc, clien
 		}
 		dataTypeBuf := make([]byte, 2)
 		_, err = r.Read(dataTypeBuf)
-
 		switch dataTypeBuf[0] {
 		case 0:
 			data := dataTypeBuf[1:]
@@ -164,7 +202,7 @@ func clientToHostContainer(ctx context.Context, cancel context.CancelFunc, clien
 			} else {
 				cacheBuff.Write(data)
 			}
-			err := podConn.WriteMessage(websocket.BinaryMessage, cacheBuff.Bytes())
+			err := containerConn.WriteMessage(websocket.BinaryMessage, cacheBuff.Bytes())
 			if err != nil {
 				log.Printf("failed to write %v bytes to tty: %s", len(data), err)
 			}
@@ -489,6 +527,7 @@ func main() {
 
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
+	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
 	m.HandleFunc("/k8s-exec/{name}/{cluster}/{user}/{expiry}/{encrypted_msg}/{mac}", handleKubernetes)
 	m.HandleFunc("/docker-exec/{name}/{cluster}/{host}/{port}/{user}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleSSH)
