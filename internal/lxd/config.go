@@ -22,7 +22,7 @@ func Cfg(vars map[string]string) (*websocket.Conn, error) {
 	messageToVerify := vars["name"] + "," + vars["cluster"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
 	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
 	if err != nil {
-		return nil, err
+		log.Print(err)
 	}
 	decryptedMessage := conceal.Decrypt(vars["encrypted_msg"], "")
 	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
@@ -39,11 +39,11 @@ func Cfg(vars map[string]string) (*websocket.Conn, error) {
 	}
 	secretData, err := vault.SecretRequest(vaultConfig, expiry)
 	if err != nil {
-		return nil, err
+		log.Print(err)
 	}
 	SecretWithTls, err := unmarshalSecret(secretData)
 	if err != nil {
-		return nil, err
+		log.Print(err)
 	}
 	ConnArgs := &lxd.ConnectionArgs{
 		TLSClientCert:      SecretWithTls.Cert,
@@ -63,9 +63,16 @@ func Cfg(vars map[string]string) (*websocket.Conn, error) {
 		Command:     []string{"/bin/bash"},
 		Interactive: true,
 		WaitForWS:   true,
-		Environment: map[string]string{"TERM": "xterm"},
+		//Environment: map[string]string{"TERM": "xterm"},
 	}
-	op, err := c.ExecContainer(vars["name"], req, nil)
+
+	op, err := c.ExecContainer(vars["name"], req, &lxd.ContainerExecArgs{
+		Control: func(conn *websocket.Conn) {
+			Control(conn, 80, 25)
+		},
+	})
+
+	// Setup the exec requestconnStdin
 	if err != nil {
 		log.Print(err)
 	}
@@ -73,8 +80,9 @@ func Cfg(vars map[string]string) (*websocket.Conn, error) {
 	// convert secret to map[string]string
 	secret, ok := secretFDS.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("failed to convert secret to map[string]string")
+		log.Print(err)
 	}
 	secret_0 := secret["0"].(string)
-	return c.GetOperationWebsocket(op.Get().ID, secret_0)
+	conn, err := c.GetOperationWebsocket(op.Get().ID, secret_0)
+	return conn, err
 }

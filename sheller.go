@@ -74,69 +74,10 @@ const (
 	stderr
 )
 
-func handleLXD(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	log.Print(vars)
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	clientConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Print(err)
-	}
-	cacheBuff.Write([]byte{0})
-	containerConn, err := lxd.Cfg(vars)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-	defer containerConn.Close()
-	wg := sync.WaitGroup{}
-	wg.Add(4)
-	// reaches here but does nothing inside the goroutines below
-	go hostToClientContainer(ctx, cancel, clientConn, containerConn, &wg)
-	go clientToHostContainer(ctx, cancel, clientConn, containerConn, &wg)
-	go pingWebsocket(ctx, cancel, clientConn, &wg)
-	go pingWebsocket(ctx, cancel, containerConn, &wg)
-	wg.Wait()
-}
-
-func handleDocker(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	log.Print(vars)
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	clientConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Print(err)
-	}
-	cacheBuff.Write([]byte{0})
-	containerConn, _, err := docker.Cfg(vars)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-	defer containerConn.Close()
-	wg := sync.WaitGroup{}
-	wg.Add(4)
-	// reaches here but does nothing inside the goroutines below
-	go hostToClientContainer(ctx, cancel, clientConn, containerConn, &wg)
-	go clientToHostContainer(ctx, cancel, clientConn, containerConn, &wg)
-	go pingWebsocket(ctx, cancel, clientConn, &wg)
-	go pingWebsocket(ctx, cancel, containerConn, &wg)
-	wg.Wait()
-}
-
-func hostToClientContainer(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
+func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
 	for {
-		msgtype, msg, err := containerConn.ReadMessage()
-		if err != nil {
-			log.Print(err)
-		}
-		fmt.Print(msgtype)
-		fmt.Print(msg)
-
 		r, err := shellerio.GetNextReader(ctx, containerConn)
 		if err != nil {
 			if err := clientConn.WriteControl(websocket.CloseMessage,
@@ -152,25 +93,18 @@ func hostToClientContainer(ctx context.Context, cancel context.CancelFunc, clien
 		}
 		var buf []byte
 		buf = make([]byte, 1024, 10*1024)
-		readBytes, err := r.Read(buf)
+		_, err = r.Read(buf)
 		if err != nil {
 			log.Println(err)
 		}
-		log.Printf("%s", cacheBuff.String())
-		if readBytes > 1 {
-			switch buf[0] {
-			case 1:
-				buf[0] = 0
-				s := strings.Replace(string(buf[1:]), cacheBuff.String(), "", -1)
-				clientConn.WriteMessage(websocket.BinaryMessage, []byte(s))
-			}
-			cacheBuff.Reset()
-			cacheBuff.Write([]byte{0})
-		}
+		s := strings.Replace(string(buf), cacheBuff.String(), "", -1)
+		messageBytes := []byte(s)
+		messageBytes = append([]byte{0}, messageBytes...)
+		clientConn.WriteMessage(websocket.BinaryMessage, messageBytes)
 	}
 }
 
-func clientToHostContainer(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
+func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
 	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
@@ -187,6 +121,87 @@ func clientToHostContainer(ctx context.Context, cancel context.CancelFunc, clien
 			return
 		}
 		dataTypeBuf := make([]byte, 2)
+		_, err = r.Read(dataTypeBuf)
+		switch dataTypeBuf[0] {
+		case 0:
+			keystroke := dataTypeBuf[1:]
+			dataLength := len(keystroke)
+			if dataLength == -1 {
+				log.Println("failed to get the correct number of bytes read, ignoring message")
+				continue
+			}
+			cacheBuff.Write(keystroke)
+
+			err := containerConn.WriteMessage(websocket.BinaryMessage, cacheBuff.Bytes())
+			if err != nil {
+				log.Printf("failed to write %v bytes to tty: %s", len(keystroke), err)
+			}
+			cacheBuff.Reset()
+			cacheBuff.Write([]byte{0})
+		case 1:
+			continue
+		}
+	}
+}
+
+func containerToClient(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer cancel()
+	for {
+		r, err := shellerio.GetNextReader(ctx, containerConn)
+
+		if err != nil {
+			if err := clientConn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
+			} else if err != nil {
+				log.Printf("Error sending close message: %v", err)
+			}
+			return
+		}
+		if r == nil {
+			return
+		}
+
+		var buf []byte
+		buf = make([]byte, 1024, 10*1024)
+		readBytes, err := r.Read(buf)
+		if err != nil {
+			log.Println(err)
+		}
+		if readBytes > 1 {
+			switch buf[0] {
+			case 1:
+				buf[0] = 0
+				s := strings.Replace(string(buf[1:]), cacheBuff.String(), "", -1)
+				clientConn.WriteMessage(websocket.BinaryMessage, []byte(s))
+			}
+			cacheBuff.Reset()
+			cacheBuff.Write([]byte{0})
+		}
+		buf[0] = 0
+		s := strings.Replace(string(buf[1:]), cacheBuff.String(), "", -1)
+		clientConn.WriteMessage(websocket.BinaryMessage, []byte(s))
+	}
+}
+
+func clientToContainer(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer cancel()
+	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	clientConn.SetPongHandler(func(string) error { clientConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	containerConn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	containerConn.SetPongHandler(func(string) error { containerConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	for {
+		r, err := shellerio.GetNextReader(ctx, clientConn)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		if r == nil {
+			return
+		}
+		dataTypeBuf := make([]byte, 100)
 		_, err = r.Read(dataTypeBuf)
 		switch dataTypeBuf[0] {
 		case 0:
@@ -212,97 +227,6 @@ func clientToHostContainer(ctx context.Context, cancel context.CancelFunc, clien
 			continue
 		}
 	}
-}
-
-func handleKubernetes(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	clientConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Print(err)
-	}
-	cacheBuff.Write([]byte{0})
-	vars := mux.Vars(r)
-	podConn, _, err := k8s.Cfg(vars)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	defer podConn.Close()
-	wg := sync.WaitGroup{}
-	wg.Add(4)
-	go hostToClientContainer(ctx, cancel, clientConn, podConn, &wg)
-	go clientToHostContainer(ctx, cancel, clientConn, podConn, &wg)
-	go pingWebsocket(ctx, cancel, clientConn, &wg)
-	go pingWebsocket(ctx, cancel, podConn, &wg)
-	wg.Wait()
-}
-
-func handleSSH(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	vars := mux.Vars(r)
-	config, err := machine.SHHCfg(vars)
-	if err != nil {
-		fmt.Print(err)
-	}
-	connSSH, err := ssh.Dial("tcp", vars["host"]+":"+vars["port"], config)
-	if err != nil {
-		log.Println("Failed to dial: " + err.Error())
-		/*
-			err := saveFailedAttemptKeyMachineAssociation(client, keyMachineAssociationID)
-			if err != nil {
-				log.Println("Failed to save failed attempt on KeyMachineAssociation: " + err.Error())
-			}
-		*/
-		return
-	}
-	defer connSSH.Close()
-
-	// Each ClientConn can support multiple interactive sessions,
-	// represented by a Session.
-	session, err := connSSH.NewSession()
-	if err != nil {
-		log.Println("Failed to create session: " + err.Error())
-		return
-	}
-	defer session.Close()
-
-	remoteStdin, err := session.StdinPipe()
-	if err != nil {
-		log.Println("Failed to create stdinpipe: " + err.Error())
-		return
-	}
-	remoteStdout, err := session.StdoutPipe()
-	if err != nil {
-		log.Println("Failed to create stdoutpipe: " + err.Error())
-		return
-	}
-	remoteStdout = shellerio.NewCancelableReader(ctx, remoteStdout)
-
-	err = startSSH(session)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	defer conn.Close()
-
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	go clientToHostSSH(ctx, cancel, conn, &wg, remoteStdin, session)
-	go hostToClient(ctx, cancel, conn, &wg, remoteStdout)
-	go pingWebsocket(ctx, cancel, conn, &wg)
-
-	wg.Wait()
-	log.Println("SSH connection finished")
 }
 
 func startSSH(session *ssh.Session) error {
@@ -511,6 +435,150 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 
 	wg.Wait()
 	log.Println("VNC connection finished")
+}
+
+func handleSSH(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	vars := mux.Vars(r)
+	config, err := machine.SHHCfg(vars)
+	if err != nil {
+		fmt.Print(err)
+	}
+	connSSH, err := ssh.Dial("tcp", vars["host"]+":"+vars["port"], config)
+	if err != nil {
+		log.Println("Failed to dial: " + err.Error())
+		/*
+			err := saveFailedAttemptKeyMachineAssociation(client, keyMachineAssociationID)
+			if err != nil {
+				log.Println("Failed to save failed attempt on KeyMachineAssociation: " + err.Error())
+			}
+		*/
+		return
+	}
+	defer connSSH.Close()
+
+	// Each ClientConn can support multiple interactive sessions,
+	// represented by a Session.
+	session, err := connSSH.NewSession()
+	if err != nil {
+		log.Println("Failed to create session: " + err.Error())
+		return
+	}
+	defer session.Close()
+
+	remoteStdin, err := session.StdinPipe()
+	if err != nil {
+		log.Println("Failed to create stdinpipe: " + err.Error())
+		return
+	}
+	remoteStdout, err := session.StdoutPipe()
+	if err != nil {
+		log.Println("Failed to create stdoutpipe: " + err.Error())
+		return
+	}
+	remoteStdout = shellerio.NewCancelableReader(ctx, remoteStdout)
+
+	err = startSSH(session)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	defer conn.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go clientToHostSSH(ctx, cancel, conn, &wg, remoteStdin, session)
+	go hostToClient(ctx, cancel, conn, &wg, remoteStdout)
+	go pingWebsocket(ctx, cancel, conn, &wg)
+
+	wg.Wait()
+	log.Println("SSH connection finished")
+}
+func handleLXD(w http.ResponseWriter, r *http.Request) {
+
+	vars := mux.Vars(r)
+	log.Print(vars)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print(err)
+	}
+	cacheBuff.Write([]byte{0})
+	conn, err := lxd.Cfg(vars)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	defer conn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	// reaches here but does nothing inside the goroutines below
+	go containerToClientLXD(ctx, cancel, clientConn, conn, &wg)
+	go clientToContainerLXD(ctx, cancel, clientConn, conn, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, conn, &wg)
+	wg.Wait()
+
+}
+
+func handleDocker(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	log.Print(vars)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print(err)
+	}
+	cacheBuff.Write([]byte{0})
+	containerConn, _, err := docker.Cfg(vars)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	defer containerConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	// reaches here but does nothing inside the goroutines below
+	go containerToClient(ctx, cancel, clientConn, containerConn, &wg)
+	go clientToContainer(ctx, cancel, clientConn, containerConn, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, containerConn, &wg)
+	wg.Wait()
+}
+
+func handleKubernetes(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Print(err)
+	}
+	cacheBuff.Write([]byte{0})
+	vars := mux.Vars(r)
+	podConn, _, err := k8s.Cfg(vars)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer podConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	go containerToClient(ctx, cancel, clientConn, podConn, &wg)
+	go clientToContainer(ctx, cancel, clientConn, podConn, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, podConn, &wg)
+	wg.Wait()
 }
 
 func main() {
