@@ -139,6 +139,7 @@ func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, client
 			cacheBuff.Reset()
 			cacheBuff.Write([]byte{0})
 		case 1:
+			// need to call control function of lxd
 			continue
 		}
 	}
@@ -179,9 +180,6 @@ func containerToClient(ctx context.Context, cancel context.CancelFunc, clientCon
 			cacheBuff.Reset()
 			cacheBuff.Write([]byte{0})
 		}
-		buf[0] = 0
-		s := strings.Replace(string(buf[1:]), cacheBuff.String(), "", -1)
-		clientConn.WriteMessage(websocket.BinaryMessage, []byte(s))
 	}
 }
 
