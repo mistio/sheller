@@ -93,8 +93,7 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 		if r == nil {
 			return
 		}
-		var buf []byte
-		buf = make([]byte, 1024, 10*1024)
+		buf := make([]byte, 1024, 10*1024)
 		_, err = r.Read(buf)
 		if err != nil {
 			log.Println(err)
