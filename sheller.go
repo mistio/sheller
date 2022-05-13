@@ -59,6 +59,7 @@ var (
 )
 
 var (
+	controlD       = []byte{4}
 	newline        = []byte{10}
 	carriageReturn = []byte{13}
 	delete         = []byte{127}
@@ -80,6 +81,7 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 	for {
 		r, err := shellerio.GetNextReader(ctx, containerConn)
 		if err != nil {
+			clientConn.WriteMessage(websocket.BinaryMessage, controlD)
 			if err := clientConn.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
@@ -157,6 +159,7 @@ func containerToClient(ctx context.Context, cancel context.CancelFunc, clientCon
 		r, err := shellerio.GetNextReader(ctx, containerConn)
 
 		if err != nil {
+			clientConn.WriteMessage(websocket.BinaryMessage, controlD)
 			if err := clientConn.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
