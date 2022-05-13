@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -138,14 +137,6 @@ func Cfg(vars map[string]string) (*websocket.Conn, *http.Response, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", "kubeconfig.txt")
 	if err != nil {
 		log.Fatalln(err)
-	}
-	clientSet, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		panic(err.Error())
-	}
-	err = checkifPodExists(clientSet, opts)
-	if err != nil {
-		panic(err.Error())
 	}
 	req, err := execRequest(config, opts)
 	if err != nil {

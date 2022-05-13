@@ -10,12 +10,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-type execConfig struct {
-	User string
-	Host string
-	Port string
-}
-
 type TerminalSize struct {
 	Height int `json:"height"`
 	Width  int `json:"width"`
@@ -42,6 +36,6 @@ func Cfg(EncryptedMessage string, expiry int64) (ssh.AuthMethod, error) {
 	if err != nil {
 		return nil, err
 	}
-	priv, err := AuthMethod(kPair)
+	priv, err := AuthMethodFromSecret(kPair)
 	return priv, err
 }

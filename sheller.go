@@ -16,9 +16,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -27,14 +24,13 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sheller/internal/docker"
-	k8s "sheller/internal/kubernetes"
-	"sheller/internal/lxd"
-	"sheller/internal/machine"
+	"sheller/docker"
+	k8s "sheller/kubernetes"
 	sheller "sheller/lib"
-	conceal "sheller/util/conceal"
+	"sheller/lxd"
+	"sheller/machine"
 	shellerio "sheller/util/io"
-	"sheller/util/secret/vault"
+	"sheller/util/verify"
 	"strconv"
 	"strings"
 	"sync"
@@ -356,56 +352,26 @@ func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websock
 func handleVNC(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-
 	vars := mux.Vars(r)
-	proxy := vars["proxy"]
-	keyID := vars["key"]
-	host := vars["host"]
-	port := vars["port"]
-	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
-	mac := vars["mac"]
-	// Create a new HMAC by defining the hash type and the key (as byte array)
-	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
-	// Write Data to it
-	h.Write([]byte(proxy + "," + keyID + "," + host + "," + port + "," + vars["expiry"]))
-	sha := hex.EncodeToString(h.Sum(nil))
-	if sha != mac {
-		panic("HMAC MISMATCH")
-	}
-	decryptedMessage := conceal.Decrypt(vars["encrypted_msg"], "")
-	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
-	token := plaintextParts[0]
-	secretPath := plaintextParts[1]
-	keyName := plaintextParts[2]
-	vaultConfig := vault.AccessWithToken{
-		Vault: vault.Vault{
-			Address:    os.Getenv("VAULT_ADDR"),
-			SecretPath: fmt.Sprintf("/v1/%s/data/mist/keys/%s", secretPath, keyName),
-		},
-		Token: token,
-	}
-	secretData, err := vault.SecretRequest(vaultConfig, expiry)
+	messageToVerify := vars["proxy"] + "," + vars["KeyID"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"]
+	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
 	if err != nil {
-		log.Println(err)
+		log.Print(err)
 		return
 	}
-	kPair, err := machine.UnmarshalSecret(secretData)
+	EncryptedMessage := vars["encrypted_msg"]
+	Expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
+	priv, err := machine.Cfg(EncryptedMessage, Expiry)
 	if err != nil {
 		log.Println(err)
-		return
-	}
-	priv, err := machine.AuthMethod(kPair)
-	if err != nil {
-		log.Println(err)
-		return
 	}
 	// Setup the tunnel, but do not yet start it yet.
 	tunnel := sshtunnel.NewSSHTunnel(
 		// User and host of tunnel server, it will default to port 22
 		// if not specified.
-		proxy,
+		vars["proxy"],
 		priv, // 1. private key
-		host+":"+port,
+		vars["host"]+":"+vars["port"],
 		"0",
 	)
 	// You can provide a logger for debugging, or remove this line to
@@ -445,19 +411,28 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	vars := mux.Vars(r)
-	config, err := machine.SHHCfg(vars)
+	messageToVerify := vars["user"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
+	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	EncryptedMessage := vars["encrypted_msg"]
+	Expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
+	priv, err := machine.Cfg(EncryptedMessage, Expiry)
 	if err != nil {
 		fmt.Print(err)
+	}
+	config := &ssh.ClientConfig{
+		User: vars["user"],
+		Auth: []ssh.AuthMethod{
+			priv,
+		},
+		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
 	}
 	connSSH, err := ssh.Dial("tcp", vars["host"]+":"+vars["port"], config)
 	if err != nil {
 		log.Println("Failed to dial: " + err.Error())
-		/*
-			err := saveFailedAttemptKeyMachineAssociation(client, keyMachineAssociationID)
-			if err != nil {
-				log.Println("Failed to save failed attempt on KeyMachineAssociation: " + err.Error())
-			}
-		*/
 		return
 	}
 	defer connSSH.Close()

@@ -4,18 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"sheller/util/secret/vault"
 )
-
-func unmarshalSecret(d vault.SecretData) (secretWithTls, error) {
-	var secret secretWithTls
-	secret.Tls.CA = d["ca_cert_file"]
-	secret.Tls.Cert = d["cert_file"]
-	secret.Tls.Key = d["key_file"]
-	secret.Host = d["host"]
-	secret.Port = d["port"]
-	return secret, nil
-}
 
 func attachRequest(opts *attachOptions) (*http.Request, error) {
 	//create empty url to be populated

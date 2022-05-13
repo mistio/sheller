@@ -7,14 +7,18 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+type KeyPair struct {
+	PublicKey  string
+	PrivateKey string
+}
+
 func UnmarshalSecret(d vault.SecretData) (KeyPair, error) {
 	var kPair KeyPair
 	kPair.PublicKey = d["public"]
 	kPair.PrivateKey = d["private"]
 	return kPair, nil
 }
-
-func AuthMethod(kPair KeyPair) (ssh.AuthMethod, error) {
+func AuthMethodFromSecret(kPair KeyPair) (ssh.AuthMethod, error) {
 	keyBody := kPair.PrivateKey
 	keyBody = strings.Replace(keyBody, `\n`, "\n", -1)
 	keyBody = strings.Replace(keyBody, `"`, "", -1)
