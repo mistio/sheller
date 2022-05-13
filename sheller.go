@@ -104,7 +104,7 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 	}
 }
 
-func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
+func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, ControlConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
 	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
@@ -120,11 +120,15 @@ func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, client
 		if r == nil {
 			return
 		}
-		dataTypeBuf := make([]byte, 2)
+		dataTypeBuf := make([]byte, 1)
 		_, err = r.Read(dataTypeBuf)
+		if err != nil {
+			log.Println(err)
+		}
 		switch dataTypeBuf[0] {
 		case 0:
-			keystroke := dataTypeBuf[1:]
+			r.Read(dataTypeBuf)
+			keystroke := dataTypeBuf
 			dataLength := len(keystroke)
 			if dataLength == -1 {
 				log.Println("failed to get the correct number of bytes read, ignoring message")
@@ -139,7 +143,8 @@ func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, client
 			cacheBuff.Reset()
 			cacheBuff.Write([]byte{0})
 		case 1:
-			// need to call control function of lxd
+			TerminalSize := lxd.DecodeResizeMessage(r)
+			lxd.Control(ControlConn, TerminalSize)
 			continue
 		}
 	}
@@ -164,8 +169,7 @@ func containerToClient(ctx context.Context, cancel context.CancelFunc, clientCon
 			return
 		}
 
-		var buf []byte
-		buf = make([]byte, 1024, 10*1024)
+		buf := make([]byte, 1024, 10*1024)
 		readBytes, err := r.Read(buf)
 		if err != nil {
 			log.Println(err)
@@ -512,7 +516,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 		log.Print(err)
 	}
 	cacheBuff.Write([]byte{0})
-	conn, err := lxd.Cfg(vars)
+	conn, err, ControlConn := lxd.Cfg(vars)
 	if err != nil {
 		log.Print(err)
 		return
@@ -522,7 +526,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	wg.Add(4)
 	// reaches here but does nothing inside the goroutines below
 	go containerToClientLXD(ctx, cancel, clientConn, conn, &wg)
-	go clientToContainerLXD(ctx, cancel, clientConn, conn, &wg)
+	go clientToContainerLXD(ctx, cancel, clientConn, conn, ControlConn, &wg)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, conn, &wg)
 	wg.Wait()

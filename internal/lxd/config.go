@@ -17,7 +17,12 @@ import (
 
 type ConnectionArgs lxd.ConnectionArgs
 
-func Cfg(vars map[string]string) (*websocket.Conn, error) {
+type TerminalSize struct {
+	Height int `json:"height"`
+	Width  int `json:"width"`
+}
+
+func Cfg(vars map[string]string) (*websocket.Conn, error, *websocket.Conn) {
 	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
 	messageToVerify := vars["name"] + "," + vars["cluster"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
 	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
@@ -66,11 +71,7 @@ func Cfg(vars map[string]string) (*websocket.Conn, error) {
 		//Environment: map[string]string{"TERM": "xterm"},
 	}
 
-	op, err := c.ExecContainer(vars["name"], req, &lxd.ContainerExecArgs{
-		Control: func(conn *websocket.Conn) {
-			Control(conn, 80, 25)
-		},
-	})
+	op, err := c.ExecContainer(vars["name"], req, nil)
 
 	// Setup the exec requestconnStdin
 	if err != nil {
@@ -84,5 +85,7 @@ func Cfg(vars map[string]string) (*websocket.Conn, error) {
 	}
 	secret_0 := secret["0"].(string)
 	conn, err := c.GetOperationWebsocket(op.Get().ID, secret_0)
-	return conn, err
+	secret_control := secret["control"].(string)
+	ControlConn, _ := c.GetOperationWebsocket(op.Get().ID, secret_control)
+	return conn, err, ControlConn
 }
