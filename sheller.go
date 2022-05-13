@@ -58,17 +58,6 @@ var (
 	controlD       = []byte{4}
 	newline        = []byte{10}
 	carriageReturn = []byte{13}
-	delete         = []byte{127}
-	up             = []byte{27, 91, 65}
-	down           = []byte{27, 91, 66}
-	right          = []byte{27, 91, 67}
-	left           = []byte{27, 91, 68}
-)
-
-const (
-	stdin = iota
-	stdout
-	stderr
 )
 
 func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
@@ -174,7 +163,7 @@ func containerToClient(ctx context.Context, cancel context.CancelFunc, clientCon
 		}
 		if readBytes > 1 {
 			switch buf[0] {
-			case 1:
+			case 1, 2:
 				buf[0] = 0
 				s := strings.Replace(string(buf[1:]), cacheBuff.String(), "", -1)
 				clientConn.WriteMessage(websocket.BinaryMessage, []byte(s))
