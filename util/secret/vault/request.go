@@ -5,12 +5,25 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
 type SecretResponse map[string]map[string]map[string]string
 
 type SecretData map[string]string
+
+func CreateVaultAccessWithToken(decryptedMessage string) AccessWithToken {
+	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
+	return AccessWithToken{
+		Vault: Vault{
+			Address:    os.Getenv("VAULT_ADDR"),
+			SecretPath: plaintextParts[1],
+		},
+		Token: plaintextParts[0],
+	}
+}
 
 func SecretRequest(v AccessWithToken, expiry int64) (SecretData, error) {
 	if expiry < time.Now().Unix() {

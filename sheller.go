@@ -55,7 +55,7 @@ var (
 )
 
 var (
-	controlD       = []byte{4}
+	controlD       = []byte{23}
 	newline        = []byte{10}
 	carriageReturn = []byte{13}
 )
@@ -66,8 +66,7 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 	for {
 		r, err := shellerio.GetNextReader(ctx, containerConn)
 		if err != nil {
-			clientConn.WriteMessage(websocket.BinaryMessage, controlD)
-			if err := clientConn.WriteControl(websocket.CloseMessage,
+			if err := clientConn.WriteControl(websocket.BinaryMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
 			} else if err != nil {
@@ -143,8 +142,7 @@ func containerToClient(ctx context.Context, cancel context.CancelFunc, clientCon
 		r, err := shellerio.GetNextReader(ctx, containerConn)
 
 		if err != nil {
-			clientConn.WriteMessage(websocket.BinaryMessage, controlD)
-			if err := clientConn.WriteControl(websocket.CloseMessage,
+			if err := clientConn.WriteControl(websocket.BinaryMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
 			} else if err != nil {
@@ -342,15 +340,13 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	vars := mux.Vars(r)
-	messageToVerify := vars["proxy"] + "," + vars["KeyID"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"]
+	messageToVerify := vars["proxy"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"]
 	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
 	if err != nil {
 		log.Print(err)
 		return
 	}
-	EncryptedMessage := vars["encrypted_msg"]
-	Expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
-	priv, err := machine.Cfg(EncryptedMessage, Expiry)
+	priv, err := machine.Cfg(vars)
 	if err != nil {
 		log.Println(err)
 	}
@@ -406,9 +402,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		log.Print(err)
 		return
 	}
-	EncryptedMessage := vars["encrypted_msg"]
-	Expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
-	priv, err := machine.Cfg(EncryptedMessage, Expiry)
+	priv, err := machine.Cfg(vars)
 	if err != nil {
 		fmt.Print(err)
 	}
@@ -471,8 +465,8 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 	log.Println("SSH connection finished")
 }
-func handleLXD(w http.ResponseWriter, r *http.Request) {
 
+func handleLXD(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	log.Print(vars)
 	ctx, cancel := context.WithCancel(r.Context())
@@ -567,7 +561,7 @@ func main() {
 	m.HandleFunc("/k8s-exec/{name}/{cluster}/{user}/{expiry}/{encrypted_msg}/{mac}", handleKubernetes)
 	m.HandleFunc("/docker-exec/{name}/{cluster}/{host}/{port}/{user}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleSSH)
-	m.HandleFunc("/proxy/{proxy}/{key}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
+	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,
 		Handler:        m,
