@@ -2,13 +2,9 @@ package machine
 
 import (
 	"fmt"
-	"log"
-	"net"
 	"os"
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
-	"sheller/util/verify"
-	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -25,17 +21,8 @@ type TerminalSize struct {
 	Width  int `json:"width"`
 }
 
-func SHHCfg(vars map[string]string) (*ssh.ClientConfig, error) {
-	user := vars["user"]
-	host := vars["host"]
-	port := vars["port"]
-	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
-	messageToVerify := user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]
-	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
-	if err != nil {
-		return nil, err
-	}
-	decryptedMessage := conceal.Decrypt(vars["encrypted_msg"], "")
+func Cfg(EncryptedMessage string, expiry int64) (ssh.AuthMethod, error) {
+	decryptedMessage := conceal.Decrypt(EncryptedMessage, "")
 	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
 	token := plaintextParts[0]
 	secretPath := plaintextParts[1]
@@ -56,15 +43,5 @@ func SHHCfg(vars map[string]string) (*ssh.ClientConfig, error) {
 		return nil, err
 	}
 	priv, err := AuthMethod(kPair)
-	if err != nil {
-		log.Println(err)
-		return nil, err
-	}
-	return &ssh.ClientConfig{
-		User: user,
-		Auth: []ssh.AuthMethod{
-			priv,
-		},
-		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
-	}, nil
+	return priv, err
 }
