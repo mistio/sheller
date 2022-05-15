@@ -340,7 +340,8 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	vars := mux.Vars(r)
-	messageToVerify := vars["proxy"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"]
+	log.Print(vars)
+	messageToVerify := vars["proxy"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
 	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
 	if err != nil {
 		log.Print(err)
