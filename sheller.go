@@ -66,7 +66,11 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 	for {
 		r, err := shellerio.GetNextReader(ctx, containerConn)
 		if err != nil {
-			if err := clientConn.WriteControl(websocket.BinaryMessage,
+			log.Println(err)
+			return
+		}
+		if r == nil {
+			if err := clientConn.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
 			} else if err != nil {
@@ -74,9 +78,7 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 			}
 			return
 		}
-		if r == nil {
-			return
-		}
+
 		buf := make([]byte, 1024, 10*1024)
 		_, err = r.Read(buf)
 		if err != nil {
@@ -140,17 +142,17 @@ func containerToClient(ctx context.Context, cancel context.CancelFunc, clientCon
 	defer cancel()
 	for {
 		r, err := shellerio.GetNextReader(ctx, containerConn)
-
 		if err != nil {
-			if err := clientConn.WriteControl(websocket.BinaryMessage,
+			log.Println(err)
+			return
+		}
+		if r == nil {
+			if err := clientConn.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
 			} else if err != nil {
 				log.Printf("Error sending close message: %v", err)
 			}
-			return
-		}
-		if r == nil {
 			return
 		}
 
@@ -483,6 +485,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	defer clientConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
 	// reaches here but does nothing inside the goroutines below
