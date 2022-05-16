@@ -2,16 +2,13 @@ package kubernetes
 
 import (
 	"flag"
-	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
 	conceal "sheller/util/conceal"
 	"sheller/util/secret/vault"
-	"sheller/util/verify"
 	"strconv"
-	"strings"
 
 	"github.com/gorilla/websocket"
 	"k8s.io/client-go/rest"
@@ -74,8 +71,6 @@ func parseKubeConfig() {
 
 func Cfg(vars map[string]string) (*websocket.Conn, *http.Response, error) {
 	name := vars["name"]
-	cluster := vars["cluster"]
-	user := vars["user"]
 	opts := &execConfig{
 		Namespace: "default",
 		Pod:       name, // pod name not the same as pod if more than one pod
@@ -85,24 +80,8 @@ func Cfg(vars map[string]string) (*websocket.Conn, *http.Response, error) {
 		TTY:       true,
 	}
 	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
-	messageToVerify := name + "," + cluster + "," + user + "," + vars["expiry"] + "," + vars["encrypted_msg"]
-	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
-	if err != nil {
-		return nil, nil, err
-	}
 	decryptedMessage := conceal.Decrypt(vars["encrypted_msg"], "")
-	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
-	token := plaintextParts[0]
-	secretPath := plaintextParts[1]
-	keyName := plaintextParts[2]
-	kubernetesSecretsURI := fmt.Sprintf("/v1/%s/data/mist/clouds/%s", secretPath, keyName)
-	vaultConfig := vault.AccessWithToken{
-		Vault: vault.Vault{
-			Address:    os.Getenv("VAULT_ADDR"),
-			SecretPath: kubernetesSecretsURI,
-		},
-		Token: token,
-	}
+	vaultConfig := vault.CreateVaultAccessWithToken(decryptedMessage)
 	secretData, err := vault.SecretRequest(vaultConfig, expiry)
 	if err != nil {
 		return nil, nil, err

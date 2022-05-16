@@ -55,7 +55,6 @@ var (
 )
 
 var (
-	controlD       = []byte{23}
 	newline        = []byte{10}
 	carriageReturn = []byte{13}
 )
@@ -342,7 +341,6 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	vars := mux.Vars(r)
-	log.Print(vars)
 	messageToVerify := vars["proxy"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
 	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
 	if err != nil {
@@ -470,14 +468,15 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleLXD(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	vars := mux.Vars(r)
 	messageToVerify := vars["name"] + "," + vars["cluster"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
 	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
 	if err != nil {
-		log.Print(err)
+		log.Println(err)
+		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Print(err)
@@ -530,12 +529,17 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	vars := mux.Vars(r)
+	messageToVerify := vars["name"] + "," + vars["cluster"] + "," + vars["user"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
+	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
+	if err != nil {
+		return
+	}
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Print(err)
 	}
 	cacheBuff.Write([]byte{0})
-	vars := mux.Vars(r)
 	podConn, _, err := k8s.Cfg(vars)
 	if err != nil {
 		log.Println(err)
