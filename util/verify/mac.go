@@ -4,7 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"errors"
 )
 
 func CheckMAC(mac string, message string, secret []byte) error {
@@ -12,7 +12,7 @@ func CheckMAC(mac string, message string, secret []byte) error {
 	h.Write([]byte(message))
 	sha := hex.EncodeToString(h.Sum(nil))
 	if sha != mac {
-		return fmt.Errorf("Invalid MAC")
+		return errors.New("mac mismatch")
 	}
 	return nil
 }

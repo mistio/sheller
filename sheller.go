@@ -14,7 +14,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -24,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sheller/lib"
 	sheller "sheller/lib"
 	"sheller/machine"
 	shellerio "sheller/util/io"
@@ -46,7 +46,6 @@ var (
 	pongTimeout      = flag.Duration("pong_timeout", 10*time.Second, "Pong message timeout.")
 	// Send pings to peer with this period. Must be less than pongTimeout.
 	pingPeriod = (*pongTimeout * 9) / 10
-	cacheBuff  bytes.Buffer
 	upgrader   websocket.Upgrader
 )
 
@@ -78,7 +77,7 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := shellerio.GetNextReader(ctx, conn)
+		r, err := lib.GetNextReader(ctx, conn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -136,7 +135,7 @@ func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := shellerio.GetNextReader(ctx, conn)
+		r, err := lib.GetNextReader(ctx, conn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -180,7 +179,7 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 		log.Print(err)
 		return
 	}
-	priv, err := machine.Cfg(vars)
+	priv, err := machine.GetPrivateKey(vars)
 	if err != nil {
 		log.Println(err)
 	}
@@ -227,6 +226,7 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSSH(w http.ResponseWriter, r *http.Request) {
+
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	vars := mux.Vars(r)
@@ -236,9 +236,10 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		log.Print(err)
 		return
 	}
-	priv, err := machine.Cfg(vars)
+	priv, err := machine.GetPrivateKey(vars)
 	if err != nil {
-		fmt.Print(err)
+		log.Println(err)
+		return
 	}
 	config := &ssh.ClientConfig{
 		User: vars["user"],
