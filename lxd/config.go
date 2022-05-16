@@ -3,11 +3,9 @@ package lxd
 import (
 	"fmt"
 	"log"
-	"os"
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
 	"strconv"
-	"strings"
 
 	"github.com/gorilla/websocket"
 	lxd "github.com/lxc/lxd/client"
@@ -24,18 +22,7 @@ type TerminalSize struct {
 func Cfg(vars map[string]string) (*websocket.Conn, error, *websocket.Conn) {
 	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
 	decryptedMessage := conceal.Decrypt(vars["encrypted_msg"], "")
-	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
-	token := plaintextParts[0]
-	secretPath := plaintextParts[1]
-	keyName := plaintextParts[2]
-	LXDSecretsURI := fmt.Sprintf("/v1/%s/data/mist/clouds/%s", secretPath, keyName)
-	vaultConfig := vault.AccessWithToken{
-		Vault: vault.Vault{
-			Address:    os.Getenv("VAULT_ADDR"),
-			SecretPath: LXDSecretsURI,
-		},
-		Token: token,
-	}
+	vaultConfig := vault.CreateVaultAccessWithToken(decryptedMessage)
 	secretData, err := vault.SecretRequest(vaultConfig, expiry)
 	if err != nil {
 		log.Print(err)
