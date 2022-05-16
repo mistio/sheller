@@ -6,7 +6,6 @@ import (
 	"os"
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
-	"sheller/util/verify"
 	"strconv"
 	"strings"
 
@@ -24,11 +23,6 @@ type TerminalSize struct {
 
 func Cfg(vars map[string]string) (*websocket.Conn, error, *websocket.Conn) {
 	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
-	messageToVerify := vars["name"] + "," + vars["cluster"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
-	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
-	if err != nil {
-		log.Print(err)
-	}
 	decryptedMessage := conceal.Decrypt(vars["encrypted_msg"], "")
 	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
 	token := plaintextParts[0]

@@ -471,7 +471,11 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 
 func handleLXD(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	log.Print(vars)
+	messageToVerify := vars["name"] + "," + vars["cluster"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
+	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
+	if err != nil {
+		log.Print(err)
+	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	clientConn, err := upgrader.Upgrade(w, r, nil)
