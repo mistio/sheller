@@ -302,7 +302,7 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	)
 	// You can provide a logger for debugging, or remove this line to
 	// make it silent.
-	// tunnel.Log = log.New(os.Stdout, "", log.Ldate|log.Lmicroseconds)
+	tunnel.Log = log.New(os.Stdout, "", log.Ldate|log.Lmicroseconds)
 	// Start the server in the background. You will need to wait a
 	// small amount of time for it to bind to the localhost port
 	// before you can start sending connections.
