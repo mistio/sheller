@@ -1,9 +1,10 @@
 package kubernetes
 
 import (
-	"flag"
+	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	conceal "sheller/util/conceal"
 	"sheller/util/secret/vault"
 	"strconv"
@@ -11,16 +12,6 @@ import (
 	"github.com/gorilla/websocket"
 	"k8s.io/client-go/rest"
 )
-
-type kubeTLSConfigTemplate struct {
-	Certificate_authority_data string
-	Server                     string
-	Cluster                    string
-	User                       string
-	Context_name               string
-	Client_certificate_data    string
-	Client_key_data            string
-}
 
 type execConfig struct {
 	Namespace string
@@ -38,24 +29,7 @@ var kubeProtocols = []string{
 	"channel.k8s.io",
 }
 
-type Info struct {
-	User        string
-	Password    string `datapolicy:"password"`
-	CAFile      string
-	CertFile    string
-	KeyFile     string
-	BearerToken string `datapolicy:"token"`
-	Insecure    *bool
-}
-
-var kubeconfig string
-
-func parseKubeConfig() {
-	flag.StringVar(&kubeconfig, "kubeconfig", "config", "absolute path to the kubeconfig file")
-	flag.Parse()
-}
-
-func Cfg(vars map[string]string) (*websocket.Conn, *http.Response, error) {
+func PodConnection(vars map[string]string) (*websocket.Conn, *http.Response, error) {
 	name := vars["name"]
 	opts := &execConfig{
 		Namespace: "default",
@@ -72,17 +46,13 @@ func Cfg(vars map[string]string) (*websocket.Conn, *http.Response, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	SecretWithTls, err := unmarshalSecret(secretData)
+	secret, host, err := unmarshalSecret(secretData)
 	if err != nil {
 		return nil, nil, err
 	}
-	info := Info{}
-	info.CAFile = SecretWithTls.Tls.CA
-	info.CertFile = SecretWithTls.Tls.Cert
-	info.KeyFile = SecretWithTls.Tls.Key
 	clientConfig := rest.Config{}
-	clientConfig.Host = SecretWithTls.Host + ":" + SecretWithTls.Port
-	clientConfig, err = info.MergeWithConfig(clientConfig)
+	clientConfig.Host = string(host)
+	clientConfig, err = secret.MergeWithConfig(clientConfig)
 	if err != nil {
 		log.Println(err)
 	}
@@ -104,6 +74,48 @@ func Cfg(vars map[string]string) (*websocket.Conn, *http.Response, error) {
 	}
 	return podConn, Response, err
 }
+
+func execRequest(config *rest.Config, opts *execConfig) (*http.Request, error) {
+	u, err := url.Parse(config.Host)
+	if err != nil {
+		return nil, err
+	}
+
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	case "http":
+		u.Scheme = "ws"
+	default:
+		return nil, fmt.Errorf("unrecognised URL scheme in %v", u)
+	}
+
+	u.Path = fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/exec", opts.Namespace, opts.Pod)
+
+	rawQuery := "stdout=true&tty=true"
+	for _, c := range opts.Command {
+		rawQuery += "&command=" + c
+	}
+
+	if opts.Container != "" {
+		rawQuery += "&container=" + opts.Container
+	}
+
+	if opts.TTY {
+		rawQuery += "&tty=true"
+	}
+
+	if opts.Stdin {
+		rawQuery += "&stdin=true"
+	}
+	u.RawQuery = rawQuery
+
+	return &http.Request{
+		Method: http.MethodGet,
+		URL:    u,
+	}, nil
+}
+
 func (info Info) MergeWithConfig(c rest.Config) (rest.Config, error) {
 	var config = c
 	config.Username = info.User

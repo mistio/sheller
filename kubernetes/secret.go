@@ -2,40 +2,63 @@ package kubernetes
 
 import (
 	b64 "encoding/base64"
+	"errors"
 	"sheller/util/secret/vault"
-	"sheller/util/tls"
 )
 
-type secretWithTls struct {
-	Tls  tls.Tls
-	Host string
-	Port string
-	// user string
-	// context string
+type Info struct {
+	User        string
+	Password    string `datapolicy:"password"`
+	CAFile      string
+	CertFile    string
+	KeyFile     string
+	BearerToken string `datapolicy:"token"`
+	Insecure    *bool
 }
 
-func unmarshalSecret(d vault.SecretData) (secretWithTls, error) {
-	var secret secretWithTls
-	// todo:check if format of tls data is existent and correct
-	// and return any possible errors
-	secret.Tls.CA = b64.StdEncoding.EncodeToString([]byte(d["ca_cert_file"]))
-	secret.Tls.Cert = b64.StdEncoding.EncodeToString([]byte(d["cert_file"]))
-	secret.Tls.Key = b64.StdEncoding.EncodeToString([]byte(d["key_file"]))
-	secret.Host = d["host"]
-	secret.Port = d["port"]
-	return secret, nil
+type Host string
+
+func unmarshalSecret(d vault.SecretData) (Info, Host, error) {
+	var host Host
+	_, hasHost := d["host"]
+	if !hasHost {
+		return Info{}, "", errors.New("did not provide host")
+	}
+	_, hasPort := d["port"]
+	if !hasPort {
+		return Info{}, "", errors.New("did not provide port")
+	}
+	host = Host(d["host"] + ":" + d["port"])
+	info := Info{}
+	_, hasTLS := d["ca_cert_file"]
+	if hasTLS {
+		info.CAFile = b64.StdEncoding.EncodeToString([]byte("ca_cert_file"))
+		info.CertFile = b64.StdEncoding.EncodeToString([]byte(d["cert_file"]))
+		info.KeyFile = b64.StdEncoding.EncodeToString([]byte(d["key_file"]))
+	}
+	_, hasUser := d["username"]
+	if hasUser {
+		info.User = d["username"]
+		_, hasPassword := d["password"]
+		if hasPassword {
+			info.Password = d["password"]
+		}
+	}
+	_, hasBearerToken := d["bearer_token"]
+	if hasBearerToken {
+		info.BearerToken = d["bearer_token"]
+	}
+	return info, host, info.Complete()
 }
 
-/*
-TO-DO: support other ways to authenticate with kubernetes clusters
-ex. username,password
-type UserPass struct {
-	User string
-	Password string
+// Complete returns true if the Kubernetes API authorization info is complete.
+func (info Info) Complete() error {
+	if len(info.User) > 0 ||
+		(len(info.CertFile) > 0 && len(info.CAFile) > 0 && len(info.KeyFile) > 0) ||
+		len(info.BearerToken) > 0 {
+		return nil
+	} else {
+		return errors.New("could not find any kubernetes credentials")
+	}
+
 }
-type VaultUserPassSecret struct {
-	UserPass UserPass
-	Host string
-	Port string
-}
-*/
