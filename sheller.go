@@ -175,37 +175,49 @@ func hostToClient(ctx context.Context, cancel context.CancelFunc, conn *websocke
 }
 
 func handleSSH(w http.ResponseWriter, r *http.Request) {
-
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
 	vars := mux.Vars(r)
-	messageToVerify := vars["user"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
+	user := vars["user"]
+	host := vars["host"]
+	port := vars["port"]
+	mac := vars["mac"]
+	messageToVerify := user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]
+
+	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+
+	// Write Data to it
 	h.Write([]byte(messageToVerify))
+
+	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
-	if sha != vars["mac"] {
+	if sha != mac {
 		log.Println("HMAC mismatch")
 		return
 	}
+
 	priv, err := machine.GetPrivateKey(vars)
 	if err != nil {
 		log.Println(err)
 		return
 	}
+
 	config := &ssh.ClientConfig{
-		User: vars["user"],
+		User: user,
 		Auth: []ssh.AuthMethod{
 			priv,
 		},
 		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
 	}
-	connSSH, err := ssh.Dial("tcp", vars["host"]+":"+vars["port"], config)
+
+	connSSH, err := ssh.Dial("tcp", host+":"+port, config)
 	if err != nil {
 		log.Println("Failed to dial: " + err.Error())
 		return
 	}
 	defer connSSH.Close()
-
 	// Each ClientConn can support multiple interactive sessions,
 	// represented by a Session.
 	session, err := connSSH.NewSession()
@@ -255,15 +267,28 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 func handleVNC(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
 	vars := mux.Vars(r)
-	messageToVerify := vars["proxy"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
+
+	proxy := vars["proxy"]
+	host := vars["host"]
+	port := vars["port"]
+	mac := vars["mac"]
+	messageToVerify := proxy + "," + host + "," + port + "," + mac + "," + vars["encrypted_msg"]
+
+	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+
+	// Write Data to it
 	h.Write([]byte(messageToVerify))
+
+	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
-	if sha != vars["mac"] {
+	if sha != mac {
 		log.Println("HMAC mismatch")
 		return
 	}
+
 	priv, err := machine.GetPrivateKey(vars)
 	if err != nil {
 		log.Println(err)
@@ -272,9 +297,9 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	tunnel := sshtunnel.NewSSHTunnel(
 		// User and host of tunnel server, it will default to port 22
 		// if not specified.
-		vars["proxy"],
+		proxy,
 		priv, // 1. private key
-		vars["host"]+":"+vars["port"],
+		host+":"+port,
 		"0",
 	)
 	// You can provide a logger for debugging, or remove this line to
