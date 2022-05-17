@@ -27,8 +27,10 @@ func GetSecret(t Token, p SecretPath, expiry int64) (Secret, error) {
 	}
 	log.Println("SECRET PATH")
 	log.Println(string(p))
-	log.Println("VAULT RESPONSE:")
-	log.Println(resp.Body)
+	log.Println("VAULT RESPONSE BODY:")
+	log.Printf("%s", resp.Body)
+	log.Println("VAULT RESPONSE STATUS:")
+	log.Println(resp.Status)
 	var r map[string]any
 	decoder := json.NewDecoder(resp.Body)
 	err = decoder.Decode(&r)
