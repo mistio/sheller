@@ -1,6 +1,7 @@
 package machine
 
 import (
+	"errors"
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
 	"strconv"
@@ -32,10 +33,14 @@ func GetPrivateKey(vars map[string]string) (ssh.AuthMethod, error) {
 		return nil, err
 	}
 	var kPair KeyPair
-	kPair.PublicKey = secretData["public"].(string)
-	kPair.PrivateKey = secretData["private"].(string)
-	if err != nil {
-		return nil, err
+	var ok bool
+	kPair.PublicKey, ok = secretData["public"].(string)
+	if !ok {
+		return nil, errors.New("can't read public key")
+	}
+	kPair.PrivateKey, ok = secretData["private"].(string)
+	if !ok {
+		return nil, errors.New("can't read private key")
 	}
 	keyBody := kPair.PrivateKey
 	keyBody = strings.Replace(keyBody, `\n`, "\n", -1)
