@@ -15,6 +15,9 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -26,7 +29,6 @@ import (
 	sheller "sheller/lib"
 	"sheller/machine"
 	shellerio "sheller/util/io"
-	"sheller/util/verify"
 	"strconv"
 	"sync"
 	"time"
@@ -178,9 +180,11 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	vars := mux.Vars(r)
 	messageToVerify := vars["user"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
-	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
-	if err != nil {
-		log.Println(err)
+	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+	h.Write([]byte(messageToVerify))
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != vars["mac"] {
+		log.Println("HMAC mismatch")
 		return
 	}
 	priv, err := machine.GetPrivateKey(vars)
@@ -253,9 +257,11 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	vars := mux.Vars(r)
 	messageToVerify := vars["proxy"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
-	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
-	if err != nil {
-		log.Print(err)
+	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+	h.Write([]byte(messageToVerify))
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != vars["mac"] {
+		log.Println("HMAC mismatch")
 		return
 	}
 	priv, err := machine.GetPrivateKey(vars)
