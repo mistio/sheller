@@ -31,6 +31,13 @@ func GetSecret(t Token, p SecretPath, expiry int64) (Secret, error) {
 	if err != nil {
 		return nil, err
 	}
-	data := r["data"].(map[string]any)
-	return Secret(data["data"].(map[string]any)), nil
+	data, ok := r["data"].(map[string]any)
+	if !ok {
+		return Secret{}, errors.New("vault response for secret not in expected form")
+	}
+	secret, ok := data["data"].(map[string]any)
+	if !ok {
+		return Secret{}, errors.New("vault response for secret not in expected form")
+	}
+	return Secret(secret), nil
 }
