@@ -18,13 +18,6 @@ type KeyPair struct {
 	PrivateKey string
 }
 
-func UnmarshalSecret(d vault.Secret) (KeyPair, error) {
-	var kPair KeyPair
-	kPair.PublicKey = d["public"].(string)
-	kPair.PrivateKey = d["private"].(string)
-	return kPair, nil
-}
-
 func GetPrivateKey(vars map[string]string) (ssh.AuthMethod, error) {
 	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
 	if err != nil {
@@ -38,7 +31,9 @@ func GetPrivateKey(vars map[string]string) (ssh.AuthMethod, error) {
 	if err != nil {
 		return nil, err
 	}
-	kPair, err := UnmarshalSecret(secretData)
+	var kPair KeyPair
+	kPair.PublicKey = secretData["public"].(string)
+	kPair.PrivateKey = secretData["private"].(string)
 	if err != nil {
 		return nil, err
 	}
