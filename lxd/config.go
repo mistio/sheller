@@ -6,6 +6,7 @@ import (
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
 	"strconv"
+	"strings"
 
 	"github.com/gorilla/websocket"
 	lxd "github.com/lxc/lxd/client"
@@ -20,16 +21,25 @@ type TerminalSize struct {
 }
 
 func Cfg(vars map[string]string) (*websocket.Conn, error, *websocket.Conn) {
-	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
-	decryptedMessage := conceal.Decrypt(vars["encrypted_msg"], "")
-	vaultConfig := vault.CreateVaultAccessWithToken(decryptedMessage)
-	secretData, err := vault.SecretRequest(vaultConfig, expiry)
+	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
 	if err != nil {
-		log.Print(err)
+		return nil, err, nil
+	}
+	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
+	token := vault.Token(plaintextParts[0])
+	secretPath := vault.SecretPath(plaintextParts[1])
+	expiry, err := strconv.ParseInt(vars["expiry"], 10, 64)
+	if err != nil {
+		return nil, err, nil
+	}
+	secretData, err := vault.GetSecret(token, secretPath, expiry)
+	if err != nil {
+		return nil, err, nil
 	}
 	SecretWithTls, err := unmarshalSecret(secretData)
 	if err != nil {
 		log.Print(err)
+		return nil, err, nil
 	}
 	ConnArgs := &lxd.ConnectionArgs{
 		TLSClientCert:      SecretWithTls.Cert,

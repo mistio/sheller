@@ -11,12 +11,12 @@ import (
 	"github.com/lxc/lxd/shared/api"
 )
 
-func unmarshalSecret(d vault.SecretData) (secretWithTls, error) {
+func unmarshalSecret(d vault.Secret) (secretWithTls, error) {
 	var secret secretWithTls
-	secret.Cert = d["cert_file"]
-	secret.Key = d["key_file"]
-	secret.Host = d["host"]
-	secret.Port = d["port"]
+	secret.Cert = d["cert_file"].(string)
+	secret.Key = d["key_file"].(string)
+	secret.Host = d["host"].(string)
+	secret.Port = d["port"].(string)
 	return secret, nil
 }
 

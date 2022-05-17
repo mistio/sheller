@@ -5,9 +5,10 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	conceal "sheller/util/conceal"
+	"sheller/util/conceal"
 	"sheller/util/secret/vault"
 	"strconv"
+	"strings"
 
 	"github.com/gorilla/websocket"
 	"k8s.io/client-go/rest"
@@ -39,10 +40,18 @@ func PodConnection(vars map[string]string) (*websocket.Conn, *http.Response, err
 		Stdin:     true,
 		TTY:       true,
 	}
-	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
-	decryptedMessage := conceal.Decrypt(vars["encrypted_msg"], "")
-	vaultConfig := vault.CreateVaultAccessWithToken(decryptedMessage)
-	secretData, err := vault.SecretRequest(vaultConfig, expiry)
+	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
+	if err != nil {
+		return nil, nil, err
+	}
+	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
+	token := vault.Token(plaintextParts[0])
+	secretPath := vault.SecretPath(plaintextParts[1])
+	expiry, err := strconv.ParseInt(vars["expiry"], 10, 64)
+	if err != nil {
+		return nil, nil, err
+	}
+	secretData, err := vault.GetSecret(token, secretPath, expiry)
 	if err != nil {
 		return nil, nil, err
 	}

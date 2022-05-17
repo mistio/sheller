@@ -11,12 +11,12 @@ type secretWithTls struct {
 	Port string
 }
 
-func unmarshalSecret(d vault.SecretData) (secretWithTls, error) {
+func unmarshalSecret(d vault.Secret) (secretWithTls, error) {
 	var secret secretWithTls
-	secret.Tls.CA = d["ca_cert_file"]
-	secret.Tls.Cert = d["cert_file"]
-	secret.Tls.Key = d["key_file"]
-	secret.Host = d["host"]
-	secret.Port = d["port"]
+	secret.Tls.CA = d["ca_cert_file"].(string)
+	secret.Tls.Cert = d["cert_file"].(string)
+	secret.Tls.Key = d["key_file"].(string)
+	secret.Host = d["host"].(string)
+	secret.Port = d["port"].(string)
 	return secret, nil
 }

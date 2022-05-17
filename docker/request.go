@@ -17,7 +17,7 @@ func attachRequest(opts *attachOptions) (*http.Request, error) {
 	case "http":
 		u.Scheme = "ws"
 	default:
-		return nil, fmt.Errorf("Unrecognised URL scheme in %v", u)
+		return nil, fmt.Errorf("unrecognised URL scheme in %v", u)
 	}
 
 	u.Path = fmt.Sprintf("/containers/%s/attach/ws", opts.MachineID)

@@ -18,7 +18,7 @@ type Info struct {
 
 type Host string
 
-func unmarshalSecret(d vault.SecretData) (Info, Host, error) {
+func unmarshalSecret(d vault.Secret) (Info, Host, error) {
 	var host Host
 	_, hasHost := d["host"]
 	if !hasHost {
@@ -28,25 +28,25 @@ func unmarshalSecret(d vault.SecretData) (Info, Host, error) {
 	if !hasPort {
 		return Info{}, "", errors.New("did not provide port")
 	}
-	host = Host(d["host"] + ":" + d["port"])
+	host = Host(d["host"].(string) + ":" + d["port"].(string))
 	info := Info{}
 	_, hasTLS := d["ca_cert_file"]
 	if hasTLS {
 		info.CAFile = b64.StdEncoding.EncodeToString([]byte("ca_cert_file"))
-		info.CertFile = b64.StdEncoding.EncodeToString([]byte(d["cert_file"]))
-		info.KeyFile = b64.StdEncoding.EncodeToString([]byte(d["key_file"]))
+		info.CertFile = b64.StdEncoding.EncodeToString([]byte(d["cert_file"].(string)))
+		info.KeyFile = b64.StdEncoding.EncodeToString([]byte(d["key_file"].(string)))
 	}
 	_, hasUser := d["username"]
 	if hasUser {
-		info.User = d["username"]
+		info.User = d["username"].(string)
 		_, hasPassword := d["password"]
 		if hasPassword {
-			info.Password = d["password"]
+			info.Password = d["password"].(string)
 		}
 	}
 	_, hasBearerToken := d["bearer_token"]
 	if hasBearerToken {
-		info.BearerToken = d["bearer_token"]
+		info.BearerToken = d["bearer_token"].(string)
 	}
 	return info, host, info.Complete()
 }

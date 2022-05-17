@@ -1,13 +1,10 @@
 package docker
 
 import (
-	"fmt"
 	"net/http"
-	"os"
 	conceal "sheller/util/conceal"
 	"sheller/util/secret/vault"
 	tls "sheller/util/tls"
-	"sheller/util/verify"
 	"strconv"
 	"strings"
 	"time"
@@ -24,37 +21,26 @@ type attachOptions struct {
 }
 
 func Cfg(vars map[string]string) (*websocket.Conn, *http.Response, error) {
-	name := vars["name"]
-	cluster := vars["cluster"]
-	host := vars["host"]
-	port := vars["port"]
-	encrypted_msg := vars["encrypted_msg"]
-	mac := vars["mac"]
-	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
-	messageToVerify := name + "," + cluster + "," + host + "," + port + "," + vars["user"] + "," + vars["expiry"] + "," + encrypted_msg
-	err := verify.CheckMAC(mac, messageToVerify, []byte(os.Getenv("SECRET")))
+	machineID := vars["machineID"]
+	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
 	if err != nil {
 		return nil, nil, err
 	}
-	decryptedMessage := conceal.Decrypt(vars["encrypted_msg"], "")
 	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
-	token := plaintextParts[0]
-	secretPath := plaintextParts[1]
-	keyName := plaintextParts[2]
-	machineID := plaintextParts[3]
-	dockerSecretsURI := fmt.Sprintf("/v1/%s/data/mist/clouds/%s", secretPath, keyName)
-	vaultConfig := vault.AccessWithToken{
-		Vault: vault.Vault{
-			Address:    os.Getenv("VAULT_ADDR"),
-			SecretPath: dockerSecretsURI,
-		},
-		Token: token,
+	token := vault.Token(plaintextParts[0])
+	secretPath := vault.SecretPath(plaintextParts[1])
+	expiry, err := strconv.ParseInt(vars["expiry"], 10, 64)
+	if err != nil {
+		return nil, nil, err
 	}
-	secretData, err := vault.SecretRequest(vaultConfig, expiry)
+	secretData, err := vault.GetSecret(token, secretPath, expiry)
 	if err != nil {
 		return nil, nil, err
 	}
 	SecretWithTls, err := unmarshalSecret(secretData)
+	if err != nil {
+		return nil, nil, err
+	}
 	opts := &attachOptions{
 		Host:      SecretWithTls.Host,
 		Port:      SecretWithTls.Port,
@@ -72,6 +58,9 @@ func Cfg(vars map[string]string) (*websocket.Conn, *http.Response, error) {
 		TLSClientConfig:  cfg,
 	}
 	req, err := attachRequest(opts)
+	if err != nil {
+		return nil, nil, err
+	}
 	podConn, Response, err := dialer.Dial(req.URL.String(), req.Header)
 	if err != nil {
 		return nil, nil, err

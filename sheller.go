@@ -16,6 +16,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -30,7 +33,6 @@ import (
 	"sheller/lxd"
 	"sheller/machine"
 	shellerio "sheller/util/io"
-	"sheller/util/verify"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,7 +65,7 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 	defer wg.Done()
 	defer cancel()
 	for {
-		r, err := shellerio.GetNextReader(ctx, containerConn)
+		r, err := sheller.GetNextReader(ctx, containerConn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -98,7 +100,7 @@ func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, client
 	containerConn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	containerConn.SetPongHandler(func(string) error { containerConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := shellerio.GetNextReader(ctx, clientConn)
+		r, err := sheller.GetNextReader(ctx, clientConn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -140,7 +142,7 @@ func containerToClient(ctx context.Context, cancel context.CancelFunc, clientCon
 	defer wg.Done()
 	defer cancel()
 	for {
-		r, err := shellerio.GetNextReader(ctx, containerConn)
+		r, err := sheller.GetNextReader(ctx, containerConn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -181,7 +183,7 @@ func clientToContainer(ctx context.Context, cancel context.CancelFunc, clientCon
 	containerConn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	containerConn.SetPongHandler(func(string) error { containerConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := shellerio.GetNextReader(ctx, clientConn)
+		r, err := sheller.GetNextReader(ctx, clientConn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -217,6 +219,137 @@ func clientToContainer(ctx context.Context, cancel context.CancelFunc, clientCon
 	}
 }
 
+func handleLXD(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	vars := mux.Vars(r)
+	name := vars["name"]
+	cluster := vars["cluster"]
+	host := vars["host"]
+	port := vars["port"]
+	mac := vars["mac"]
+
+	// Create a new HMAC by defining the hash type and the key (as byte array)
+	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+
+	// Write Data to it
+	h.Write([]byte(name + "," + cluster + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
+
+	// Get result and encode as hexadecimal string
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != mac {
+		log.Println("HMAC mismatch")
+		return
+	}
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print(err)
+	}
+	cacheBuff.Write([]byte{0})
+	conn, err, ControlConn := lxd.Cfg(vars)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	defer conn.Close()
+	defer clientConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	// reaches here but does nothing inside the goroutines below
+	go containerToClientLXD(ctx, cancel, clientConn, conn, &wg)
+	go clientToContainerLXD(ctx, cancel, clientConn, conn, ControlConn, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, conn, &wg)
+	wg.Wait()
+
+}
+
+func handleDocker(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	name := vars["name"]
+	cluster := vars["cluster"]
+	host := vars["host"]
+	port := vars["port"]
+	user := vars["user"]
+	encrypted_msg := vars["encrypted_msg"]
+	mac := vars["mac"]
+
+	// Create a new HMAC by defining the hash type and the key (as byte array)
+	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+
+	// Write Data to it
+	h.Write([]byte(name + "," + cluster + "," + host + "," + port + "," + user + "," + vars["expiry"] + "," + encrypted_msg))
+
+	// Get result and encode as hexadecimal string
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != mac {
+		log.Println("HMAC mismatch")
+		return
+	}
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print(err)
+	}
+	cacheBuff.Write([]byte{0})
+	containerConn, _, err := docker.Cfg(vars)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	defer containerConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	// reaches here but does nothing inside the goroutines below
+	go containerToClient(ctx, cancel, clientConn, containerConn, &wg)
+	go clientToContainer(ctx, cancel, clientConn, containerConn, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, containerConn, &wg)
+	wg.Wait()
+}
+
+func handleKubernetes(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	vars := mux.Vars(r)
+	name := vars["name"]
+	cluster := vars["cluster"]
+	user := vars["user"]
+
+	// Create a new HMAC by defining the hash type and the key (as byte array)
+	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+
+	// Write Data to it
+	h.Write([]byte(name + "," + cluster + "," + user + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
+
+	// Get result and encode as hexadecimal string
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != vars["mac"] {
+		log.Println("HMAC mismatch")
+		return
+	}
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Print(err)
+	}
+	cacheBuff.Write([]byte{0})
+	podConn, _, err := k8s.PodConnection(vars)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer podConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	go containerToClient(ctx, cancel, clientConn, podConn, &wg)
+	go clientToContainer(ctx, cancel, clientConn, podConn, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, podConn, &wg)
+	wg.Wait()
+}
+
 func startSSH(session *ssh.Session) error {
 	// Set up terminal modes
 	modes := ssh.TerminalModes{
@@ -238,6 +371,24 @@ func startSSH(session *ssh.Session) error {
 	return nil
 }
 
+func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer cancel()
+	ticker := time.NewTicker(pingPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(*writeTimeout)); err != nil {
+				log.Println("ping:", err)
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer, session *ssh.Session) {
 	defer wg.Done()
 	defer cancel()
@@ -245,7 +396,7 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := shellerio.GetNextReader(ctx, conn)
+		r, err := sheller.GetNextReader(ctx, conn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -255,6 +406,10 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 		}
 		dataTypeBuf := make([]byte, 1)
 		readBytes, err := r.Read(dataTypeBuf)
+		if err != nil {
+			log.Println(err)
+			return
+		}
 		if readBytes != 1 {
 			log.Println("Unexpected number of bytes read")
 			return
@@ -279,6 +434,29 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 	}
 }
 
+func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer) {
+	defer wg.Done()
+	defer cancel()
+	// websocket -> server
+	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	for {
+		r, err := sheller.GetNextReader(ctx, conn)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		if r == nil {
+			return
+		}
+
+		if _, err := io.Copy(writer, r); err != nil {
+			log.Printf("Reading from websocket: %v", err)
+			return
+		}
+	}
+}
+
 func hostToClient(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader) {
 	defer wg.Done()
 	defer cancel()
@@ -296,131 +474,49 @@ func hostToClient(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	}
 }
 
-func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer) {
-	defer wg.Done()
-	defer cancel()
-	// websocket -> server
-	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
-	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
-	for {
-		r, err := shellerio.GetNextReader(ctx, conn)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		if r == nil {
-			return
-		}
-
-		if _, err := io.Copy(writer, r); err != nil {
-			log.Printf("Reading from websocket: %v", err)
-			return
-		}
-	}
-}
-
-func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer cancel()
-	ticker := time.NewTicker(pingPeriod)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(*writeTimeout)); err != nil {
-				log.Println("ping:", err)
-				return
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func handleVNC(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	vars := mux.Vars(r)
-	messageToVerify := vars["proxy"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
-	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
-	if err != nil {
-		log.Print(err)
-		return
-	}
-	priv, err := machine.Cfg(vars)
-	if err != nil {
-		log.Println(err)
-	}
-	// Setup the tunnel, but do not yet start it yet.
-	tunnel := sshtunnel.NewSSHTunnel(
-		// User and host of tunnel server, it will default to port 22
-		// if not specified.
-		vars["proxy"],
-		priv, // 1. private key
-		vars["host"]+":"+vars["port"],
-		"0",
-	)
-	// You can provide a logger for debugging, or remove this line to
-	// make it silent.
-	// tunnel.Log = log.New(os.Stdout, "", log.Ldate|log.Lmicroseconds)
-	// Start the server in the background. You will need to wait a
-	// small amount of time for it to bind to the localhost port
-	// before you can start sending connections.
-	go tunnel.Start()
-	time.Sleep(100 * time.Millisecond)
-
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	defer conn.Close()
-
-	s, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(tunnel.Local.Port)), *dialTimeout)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	go clientToHost(ctx, cancel, conn, &wg, s)
-	go hostToClient(ctx, cancel, conn, &wg, s)
-	go pingWebsocket(ctx, cancel, conn, &wg)
-
-	wg.Wait()
-	log.Println("VNC connection finished")
-}
-
 func handleSSH(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
 	vars := mux.Vars(r)
-	messageToVerify := vars["user"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
-	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
-	if err != nil {
-		log.Print(err)
+	user := vars["user"]
+	host := vars["host"]
+	port := vars["port"]
+	mac := vars["mac"]
+
+	// Create a new HMAC by defining the hash type and the key (as byte array)
+	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+
+	// Write Data to it
+	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
+
+	// Get result and encode as hexadecimal string
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != mac {
+		log.Println("HMAC mismatch")
 		return
 	}
-	priv, err := machine.Cfg(vars)
+
+	priv, err := machine.GetPrivateKey(vars)
 	if err != nil {
-		fmt.Print(err)
+		log.Println(err)
+		return
 	}
+
 	config := &ssh.ClientConfig{
-		User: vars["user"],
+		User: user,
 		Auth: []ssh.AuthMethod{
 			priv,
 		},
 		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
 	}
-	connSSH, err := ssh.Dial("tcp", vars["host"]+":"+vars["port"], config)
+
+	connSSH, err := ssh.Dial("tcp", host+":"+port, config)
 	if err != nil {
 		log.Println("Failed to dial: " + err.Error())
 		return
 	}
 	defer connSSH.Close()
-
 	// Each ClientConn can support multiple interactive sessions,
 	// represented by a Session.
 	session, err := connSSH.NewSession()
@@ -467,92 +563,73 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	log.Println("SSH connection finished")
 }
 
-func handleLXD(w http.ResponseWriter, r *http.Request) {
+func handleVNC(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
 	vars := mux.Vars(r)
-	messageToVerify := vars["name"] + "," + vars["cluster"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
-	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
-	if err != nil {
-		log.Println(err)
+	proxy := vars["proxy"]
+	host := vars["host"]
+	port := vars["port"]
+	mac := vars["mac"]
+
+	// Create a new HMAC by defining the hash type and the key (as byte array)
+	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+
+	// Write Data to it
+	h.Write([]byte(proxy + "," + host + "," + port + "," + mac + "," + vars["encrypted_msg"]))
+
+	// Get result and encode as hexadecimal string
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != mac {
+		log.Println("HMAC mismatch")
 		return
 	}
-	clientConn, err := upgrader.Upgrade(w, r, nil)
+
+	priv, err := machine.GetPrivateKey(vars)
 	if err != nil {
-		log.Print(err)
+		log.Println(err)
 	}
-	cacheBuff.Write([]byte{0})
-	conn, err, ControlConn := lxd.Cfg(vars)
+	// Setup the tunnel, but do not yet start it yet.
+	tunnel := sshtunnel.NewSSHTunnel(
+		// User and host of tunnel server, it will default to port 22
+		// if not specified.
+		proxy,
+		priv, // 1. private key
+		host+":"+port,
+		"0",
+	)
+	// You can provide a logger for debugging, or remove this line to
+	// make it silent.
+	tunnel.Log = log.New(os.Stdout, "", log.Ldate|log.Lmicroseconds)
+	// Start the server in the background. You will need to wait a
+	// small amount of time for it to bind to the localhost port
+	// before you can start sending connections.
+	go tunnel.Start()
+	time.Sleep(100 * time.Millisecond)
+
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Print(err)
+		log.Println(err)
 		return
 	}
 	defer conn.Close()
-	defer clientConn.Close()
-	wg := sync.WaitGroup{}
-	wg.Add(4)
-	// reaches here but does nothing inside the goroutines below
-	go containerToClientLXD(ctx, cancel, clientConn, conn, &wg)
-	go clientToContainerLXD(ctx, cancel, clientConn, conn, ControlConn, &wg)
-	go pingWebsocket(ctx, cancel, clientConn, &wg)
-	go pingWebsocket(ctx, cancel, conn, &wg)
-	wg.Wait()
 
-}
-
-func handleDocker(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	log.Print(vars)
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	clientConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Print(err)
-	}
-	cacheBuff.Write([]byte{0})
-	containerConn, _, err := docker.Cfg(vars)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-	defer containerConn.Close()
-	wg := sync.WaitGroup{}
-	wg.Add(4)
-	// reaches here but does nothing inside the goroutines below
-	go containerToClient(ctx, cancel, clientConn, containerConn, &wg)
-	go clientToContainer(ctx, cancel, clientConn, containerConn, &wg)
-	go pingWebsocket(ctx, cancel, clientConn, &wg)
-	go pingWebsocket(ctx, cancel, containerConn, &wg)
-	wg.Wait()
-}
-
-func handleKubernetes(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	vars := mux.Vars(r)
-	messageToVerify := vars["name"] + "," + vars["cluster"] + "," + vars["user"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
-	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
-	if err != nil {
-		return
-	}
-	clientConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Print(err)
-	}
-	cacheBuff.Write([]byte{0})
-	podConn, _, err := k8s.PodConnection(vars)
+	s, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(tunnel.Local.Port)), *dialTimeout)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	defer podConn.Close()
-	wg := sync.WaitGroup{}
-	wg.Add(4)
-	go containerToClient(ctx, cancel, clientConn, podConn, &wg)
-	go clientToContainer(ctx, cancel, clientConn, podConn, &wg)
-	go pingWebsocket(ctx, cancel, clientConn, &wg)
-	go pingWebsocket(ctx, cancel, podConn, &wg)
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go clientToHost(ctx, cancel, conn, &wg, s)
+	go hostToClient(ctx, cancel, conn, &wg, s)
+	go pingWebsocket(ctx, cancel, conn, &wg)
+
 	wg.Wait()
+	log.Println("VNC connection finished")
 }
 
 func main() {
