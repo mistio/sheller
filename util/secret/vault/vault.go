@@ -3,6 +3,7 @@ package vault
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 )
@@ -24,6 +25,10 @@ func GetSecret(t Token, p SecretPath, expiry int64) (Secret, error) {
 	if err != nil {
 		return nil, err
 	}
+	log.Println("SECRET PATH")
+	log.Println(string(p))
+	log.Println("VAULT RESPONSE:")
+	log.Println(resp.Body)
 	var r map[string]any
 	decoder := json.NewDecoder(resp.Body)
 	err = decoder.Decode(&r)
@@ -32,11 +37,11 @@ func GetSecret(t Token, p SecretPath, expiry int64) (Secret, error) {
 	}
 	data, ok := r["data"].(map[string]any)
 	if !ok {
-		return Secret{}, errors.New("vault response for secret not in expected form")
+		return Secret{}, errors.New("vault response for secret not in expected form (first map)")
 	}
 	secret, ok := data["data"].(map[string]any)
 	if !ok {
-		return Secret{}, errors.New("vault response for secret not in expected form")
+		return Secret{}, errors.New("vault response for secret not in expected form (second map)")
 	}
 	return Secret(secret), nil
 }
