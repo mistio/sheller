@@ -47,7 +47,8 @@ var (
 	pongTimeout      = flag.Duration("pong_timeout", 10*time.Second, "Pong message timeout.")
 	// Send pings to peer with this period. Must be less than pongTimeout.
 	pingPeriod = (*pongTimeout * 9) / 10
-	upgrader   websocket.Upgrader
+
+	upgrader websocket.Upgrader
 )
 
 func startSSH(session *ssh.Session) error {
@@ -268,7 +269,6 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	vars := mux.Vars(r)
-
 	proxy := vars["proxy"]
 	host := vars["host"]
 	port := vars["port"]
