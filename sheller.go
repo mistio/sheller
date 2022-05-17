@@ -23,7 +23,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sheller/lib"
 	sheller "sheller/lib"
 	"sheller/machine"
 	shellerio "sheller/util/io"
@@ -77,7 +76,7 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := lib.GetNextReader(ctx, conn)
+		r, err := sheller.GetNextReader(ctx, conn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -87,6 +86,10 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 		}
 		dataTypeBuf := make([]byte, 1)
 		readBytes, err := r.Read(dataTypeBuf)
+		if err != nil {
+			log.Println(err)
+			return
+		}
 		if readBytes != 1 {
 			log.Println("Unexpected number of bytes read")
 			return
@@ -135,7 +138,7 @@ func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := lib.GetNextReader(ctx, conn)
+		r, err := sheller.GetNextReader(ctx, conn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -233,7 +236,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	messageToVerify := vars["user"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
 	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
 	if err != nil {
-		log.Print(err)
+		log.Println(err)
 		return
 	}
 	priv, err := machine.GetPrivateKey(vars)
