@@ -2,17 +2,14 @@ package kubernetes
 
 import (
 	"flag"
-	"html/template"
 	"log"
 	"net/http"
-	"os"
 	conceal "sheller/util/conceal"
 	"sheller/util/secret/vault"
 	"strconv"
 
 	"github.com/gorilla/websocket"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 type kubeTLSConfigTemplate struct {
@@ -34,32 +31,21 @@ type execConfig struct {
 	Stdin     bool
 }
 
-// todo: this should be in a file called "config.tmpl"
-var kube_tls_config_template string = `apiVersion: v1
-clusters:
-- cluster:
-    certificate-authority-data: {{.Certificate_authority_data}}
-    server: {{.Server}}
-  name: {{.Cluster}}
-contexts:
-- context:
-    cluster: {{.Cluster}}
-    user: {{.User}}
-  name: {{.Context_name}}
-current-context: {{.Context_name}}
-kind: Config
-preferences: {}
-users:
-- name: {{.User}}
-  user:
-    client-certificate-data: {{.Client_certificate_data}}
-    client-key-data: {{.Client_key_data}}
-`
 var kubeProtocols = []string{
 	"v4.channel.k8s.io",
 	"v3.channel.k8s.io",
 	"v2.channel.k8s.io",
 	"channel.k8s.io",
+}
+
+type Info struct {
+	User        string
+	Password    string `datapolicy:"password"`
+	CAFile      string
+	CertFile    string
+	KeyFile     string
+	BearerToken string `datapolicy:"token"`
+	Insecure    *bool
 }
 
 var kubeconfig string
@@ -90,40 +76,24 @@ func Cfg(vars map[string]string) (*websocket.Conn, *http.Response, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	configTemplate := kubeTLSConfigTemplate{
-		Certificate_authority_data: SecretWithTls.Tls.CA,
-		Server:                     "https://" + SecretWithTls.Host + ":" + SecretWithTls.Port,
-		User:                       vars["user"],
-		Cluster:                    "kubernetes",
-		Context_name:               vars["user"] + "@" + "kubernetes",
-		Client_certificate_data:    SecretWithTls.Tls.Cert,
-		Client_key_data:            SecretWithTls.Tls.Key,
-	}
-	configFile, err := os.Create("kubeconfig.txt")
+	info := Info{}
+	info.CAFile = SecretWithTls.Tls.CA
+	info.CertFile = SecretWithTls.Tls.Cert
+	info.KeyFile = SecretWithTls.Tls.Key
+	clientConfig := rest.Config{}
+	clientConfig.Host = SecretWithTls.Host + ":" + SecretWithTls.Port
+	clientConfig, err = info.MergeWithConfig(clientConfig)
 	if err != nil {
 		log.Println(err)
-		return nil, nil, err
 	}
-	defer configFile.Close()
-	var temp *template.Template
-	// read kube_config string
-	temp, err = template.New("").Parse(kube_tls_config_template)
-	err = temp.Execute(configFile, configTemplate)
+	req, err := execRequest(&clientConfig, opts)
 	if err != nil {
 		log.Fatalln(err)
 	}
-	parseKubeConfig()
-	config, err := clientcmd.BuildConfigFromFlags("", "kubeconfig.txt")
+	tlsConfig, err := rest.TLSConfigFor(&clientConfig)
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
 	}
-	req, err := execRequest(config, opts)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	// create an http post request
-
-	tlsConfig, err := rest.TLSConfigFor(config)
 	dialer := &websocket.Dialer{
 		TLSClientConfig: tlsConfig,
 		Subprotocols:    kubeProtocols,
@@ -133,4 +103,17 @@ func Cfg(vars map[string]string) (*websocket.Conn, *http.Response, error) {
 		log.Println(err)
 	}
 	return podConn, Response, err
+}
+func (info Info) MergeWithConfig(c rest.Config) (rest.Config, error) {
+	var config = c
+	config.Username = info.User
+	config.Password = info.Password
+	config.CAFile = info.CAFile
+	config.CertFile = info.CertFile
+	config.KeyFile = info.KeyFile
+	config.BearerToken = info.BearerToken
+	if info.Insecure != nil {
+		config.Insecure = *info.Insecure
+	}
+	return config, nil
 }
