@@ -69,6 +69,24 @@ func startSSH(session *ssh.Session) error {
 	return nil
 }
 
+func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer cancel()
+	ticker := time.NewTicker(pingPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(*writeTimeout)); err != nil {
+				log.Println("ping:", err)
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer, session *ssh.Session) {
 	defer wg.Done()
 	defer cancel()
@@ -114,23 +132,6 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 	}
 }
 
-func hostToClient(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader) {
-	defer wg.Done()
-	defer cancel()
-	// server -> websocket
-	// TODO: NextWriter() seems to be broken.
-	if err := sheller.File2WS(ctx, cancel, reader, conn); err == io.EOF {
-		if err := conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-			time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
-		} else if err != nil {
-			log.Printf("Error sending close message: %v", err)
-		}
-	} else if err != nil {
-		log.Printf("Reading from file: %v", err)
-	}
-}
-
 func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer) {
 	defer wg.Done()
 	defer cancel()
@@ -154,78 +155,21 @@ func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	}
 }
 
-func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup) {
+func hostToClient(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader) {
 	defer wg.Done()
 	defer cancel()
-	ticker := time.NewTicker(pingPeriod)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(*writeTimeout)); err != nil {
-				log.Println("ping:", err)
-				return
-			}
-		case <-ctx.Done():
-			return
+	// server -> websocket
+	// TODO: NextWriter() seems to be broken.
+	if err := sheller.File2WS(ctx, cancel, reader, conn); err == io.EOF {
+		if err := conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
+		} else if err != nil {
+			log.Printf("Error sending close message: %v", err)
 		}
+	} else if err != nil {
+		log.Printf("Reading from file: %v", err)
 	}
-}
-
-func handleVNC(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	vars := mux.Vars(r)
-	messageToVerify := vars["proxy"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
-	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
-	if err != nil {
-		log.Print(err)
-		return
-	}
-	priv, err := machine.GetPrivateKey(vars)
-	if err != nil {
-		log.Println(err)
-	}
-	// Setup the tunnel, but do not yet start it yet.
-	tunnel := sshtunnel.NewSSHTunnel(
-		// User and host of tunnel server, it will default to port 22
-		// if not specified.
-		vars["proxy"],
-		priv, // 1. private key
-		vars["host"]+":"+vars["port"],
-		"0",
-	)
-	// You can provide a logger for debugging, or remove this line to
-	// make it silent.
-	// tunnel.Log = log.New(os.Stdout, "", log.Ldate|log.Lmicroseconds)
-	// Start the server in the background. You will need to wait a
-	// small amount of time for it to bind to the localhost port
-	// before you can start sending connections.
-	go tunnel.Start()
-	time.Sleep(100 * time.Millisecond)
-
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	defer conn.Close()
-
-	s, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(tunnel.Local.Port)), *dialTimeout)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	go clientToHost(ctx, cancel, conn, &wg, s)
-	go hostToClient(ctx, cancel, conn, &wg, s)
-	go pingWebsocket(ctx, cancel, conn, &wg)
-
-	wg.Wait()
-	log.Println("VNC connection finished")
 }
 
 func handleSSH(w http.ResponseWriter, r *http.Request) {
@@ -302,6 +246,62 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 
 	wg.Wait()
 	log.Println("SSH connection finished")
+}
+
+func handleVNC(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	vars := mux.Vars(r)
+	messageToVerify := vars["proxy"] + "," + vars["host"] + "," + vars["port"] + "," + vars["expiry"] + "," + vars["encrypted_msg"]
+	err := verify.CheckMAC(vars["mac"], messageToVerify, []byte(os.Getenv("SECRET")))
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	priv, err := machine.GetPrivateKey(vars)
+	if err != nil {
+		log.Println(err)
+	}
+	// Setup the tunnel, but do not yet start it yet.
+	tunnel := sshtunnel.NewSSHTunnel(
+		// User and host of tunnel server, it will default to port 22
+		// if not specified.
+		vars["proxy"],
+		priv, // 1. private key
+		vars["host"]+":"+vars["port"],
+		"0",
+	)
+	// You can provide a logger for debugging, or remove this line to
+	// make it silent.
+	// tunnel.Log = log.New(os.Stdout, "", log.Ldate|log.Lmicroseconds)
+	// Start the server in the background. You will need to wait a
+	// small amount of time for it to bind to the localhost port
+	// before you can start sending connections.
+	go tunnel.Start()
+	time.Sleep(100 * time.Millisecond)
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer conn.Close()
+
+	s, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(tunnel.Local.Port)), *dialTimeout)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go clientToHost(ctx, cancel, conn, &wg, s)
+	go hostToClient(ctx, cancel, conn, &wg, s)
+	go pingWebsocket(ctx, cancel, conn, &wg)
+
+	wg.Wait()
+	log.Println("VNC connection finished")
 }
 
 func main() {
