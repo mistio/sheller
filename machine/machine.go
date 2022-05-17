@@ -30,9 +30,11 @@ func GetPrivateKey(vars map[string]string) (ssh.AuthMethod, error) {
 	if err != nil {
 		return nil, err
 	}
-	vaultSecretRequest := vault.GetSecretRequest(decryptedMessage)
+	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
+	token := vault.Token(plaintextParts[0])
+	secretPath := vault.SecretPath(plaintextParts[1])
 	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
-	secretData, err := vaultSecretRequest.GetSecret(expiry)
+	secretData, err := vault.GetSecret(token, secretPath, expiry)
 	if err != nil {
 		return nil, err
 	}

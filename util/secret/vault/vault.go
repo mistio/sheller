@@ -1,43 +1,31 @@
+// vault getss wgatete
 package vault
 
 import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 )
 
 type Token string
 type SecretPath string
-type SecretResponse map[string]any
 type Secret map[string]any
-type SecretRequest struct {
-	Token Token
-	Path  SecretPath
-}
 
-func GetSecretRequest(decryptedMessage string) SecretRequest {
-	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
-	token := Token(plaintextParts[0])
-	path := SecretPath(plaintextParts[1])
-	return SecretRequest{token, path}
-}
-
-func (secretRequest SecretRequest) GetSecret(expiry int64) (Secret, error) {
+func GetSecret(t Token, p SecretPath, expiry int64) (Secret, error) {
 	if expiry < time.Now().Unix() {
-		return nil, errors.New("Session expired")
+		return nil, errors.New("session expired")
 	}
-	req, err := http.NewRequest("GET", string(secretRequest.Path), nil)
+	req, err := http.NewRequest("GET", string(p), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Vault-Token", string(secretRequest.Token))
+	req.Header.Set("X-Vault-Token", string(t))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	var r SecretResponse
+	var r map[string]any
 	decoder := json.NewDecoder(resp.Body)
 	err = decoder.Decode(&r)
 	if err != nil {
