@@ -278,7 +278,7 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
 
 	// Write Data to it
-	h.Write([]byte(proxy + "," + host + "," + port + "," + mac + "," + vars["encrypted_msg"]))
+	h.Write([]byte(proxy + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
