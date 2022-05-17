@@ -183,13 +183,12 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	host := vars["host"]
 	port := vars["port"]
 	mac := vars["mac"]
-	messageToVerify := user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]
 
 	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
 
 	// Write Data to it
-	h.Write([]byte(messageToVerify))
+	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -274,13 +273,12 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	host := vars["host"]
 	port := vars["port"]
 	mac := vars["mac"]
-	messageToVerify := proxy + "," + host + "," + port + "," + mac + "," + vars["encrypted_msg"]
 
 	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
 
 	// Write Data to it
-	h.Write([]byte(messageToVerify))
+	h.Write([]byte(proxy + "," + host + "," + port + "," + mac + "," + vars["encrypted_msg"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
