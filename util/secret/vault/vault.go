@@ -1,4 +1,3 @@
-// vault getss wgatete
 package vault
 
 import (
