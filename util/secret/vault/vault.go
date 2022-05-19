@@ -25,6 +25,8 @@ func GetSecret(t Token, p SecretPath, expiry int64) (Secret, error) {
 	if err != nil {
 		return nil, err
 	}
+	log.Println("VAULT TOKEN")
+	log.Println(string(t))
 	log.Println("SECRET PATH")
 	log.Println(string(p))
 	log.Println("VAULT RESPONSE BODY:")
