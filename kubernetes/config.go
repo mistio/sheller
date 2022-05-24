@@ -69,6 +69,8 @@ func PodConnection(vars map[string]string) (*websocket.Conn, *http.Response, err
 	if err != nil {
 		log.Fatalln(err)
 	}
+	//clientConfig.Insecure = true
+
 	tlsConfig, err := rest.TLSConfigFor(&clientConfig)
 	if err != nil {
 		log.Println(err)
@@ -118,8 +120,11 @@ func execRequest(config *rest.Config, opts *execConfig) (*http.Request, error) {
 		rawQuery += "&stdin=true"
 	}
 	u.RawQuery = rawQuery
-
 	return &http.Request{
+		Header: http.Header{
+			"authorization": {"Bearer " + config.BearerToken},
+		},
+		Host:   u.Host,
 		Method: http.MethodGet,
 		URL:    u,
 	}, nil
@@ -127,11 +132,9 @@ func execRequest(config *rest.Config, opts *execConfig) (*http.Request, error) {
 
 func (info Info) MergeWithConfig(c rest.Config) (rest.Config, error) {
 	var config = c
-	config.Username = info.User
-	config.Password = info.Password
-	config.CAFile = info.CAFile
-	config.CertFile = info.CertFile
-	config.KeyFile = info.KeyFile
+	config.CAData = info.CAData
+	//config.CertData = info.CertData
+	//config.KeyData = info.KeyData
 	config.BearerToken = info.BearerToken
 	if info.Insecure != nil {
 		config.Insecure = *info.Insecure

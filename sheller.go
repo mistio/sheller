@@ -335,8 +335,11 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 		fmt.Print(err)
 	}
 	cacheBuff.Write([]byte{0})
-	podConn, _, err := k8s.PodConnection(vars)
+	podConn, Response, err := k8s.PodConnection(vars)
 	if err != nil {
+		body, err := io.ReadAll(Response.Body)
+		bodyString := string(body)
+		log.Print(bodyString)
 		log.Println(err)
 		return
 	}
