@@ -26,11 +26,14 @@ func GetPrivateKey(vars map[string]string) (ssh.AuthMethod, error) {
 	}
 	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
 	token := vault.Token(plaintextParts[0])
-	secretPath := vault.SecretPath(plaintextParts[1])
+	vault_addr := vault.SecretPath(plaintextParts[1])
+	vault_secret_engine_path := vault.SecretPath(plaintextParts[2])
+	key_path := vault.SecretPath(plaintextParts[3])
 	expiry, err := strconv.ParseInt(vars["expiry"], 10, 64)
 	if err != nil {
 		return nil, err
 	}
+	secretPath := vault_addr + "/v1/" + vault_secret_engine_path + "/data/" + key_path
 	secretData, err := vault.GetSecret(token, secretPath, expiry)
 	if err != nil {
 		return nil, err
