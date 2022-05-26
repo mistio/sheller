@@ -19,30 +19,23 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
-	"hash"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	sheller "sheller/lib"
+	"sheller/machine"
+	"sheller/util/cancelable"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
-
-	sheller "sheller/lib"
 
 	"github.com/elliotchance/sshtunnel"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -57,337 +50,6 @@ var (
 
 	upgrader websocket.Upgrader
 )
-
-// Key model
-type Key struct {
-	ID        string `bson:"_id, omitempty"`
-	Class     string `bson:"_cls"`
-	Name      string `bson:"name" json:"name"`
-	Owner     string `bson:"owner" json:"owner"`
-	Default   bool   `bson:"default" json:"default"`
-	Public    string `bson:"public" json:"public"`
-	OwnedBy   string `bson:"owned_by" json:"owned_by"`
-	CreatedBy string `bson:"created_by" json:"created_by"`
-}
-
-// Portal model
-type Portal struct {
-	ID             string `bson:"_id, omitempty"`
-	InternalApiKey string `bson:"internal_api_key, omitempty"`
-}
-
-type KeyMachineAssociation struct {
-	ID       primitive.ObjectID `bson:"_id, omitempty"`
-	Class    string             `bson:"_cls"`
-	Key      string             `bson:"key" json:"key"`
-	LastUsed int                `bson:"last_used" json:"last_used"`
-	SSHUser  string             `bson:"ssh_user" json:"ssh_user"`
-	Sudo     bool               `bson:"sudo" json:"sudo"`
-	Port     int                `bson:"port" json:"port"`
-}
-
-type terminalSize struct {
-	Height int `json:"height"`
-	Width  int `json:"width"`
-}
-
-type CancelableReader struct {
-	ctx  context.Context
-	data chan []byte
-	err  error
-	r    io.Reader
-}
-
-func (c *CancelableReader) begin() {
-	buf := make([]byte, 1024)
-	for {
-		n, err := c.r.Read(buf)
-		if err != nil {
-			c.err = err
-			close(c.data)
-			return
-		}
-		tmp := make([]byte, n)
-		copy(tmp, buf[:n])
-		c.data <- tmp
-	}
-}
-
-func (c *CancelableReader) Read(p []byte) (int, error) {
-	select {
-	case <-c.ctx.Done():
-		return 0, c.ctx.Err()
-	case d, ok := <-c.data:
-		if !ok {
-			return 0, c.err
-		}
-		copy(p, d)
-		return len(d), nil
-	}
-}
-
-func NewCancelableReader(ctx context.Context, r io.Reader) *CancelableReader {
-	c := &CancelableReader{
-		r:    r,
-		ctx:  ctx,
-		data: make(chan []byte),
-	}
-	go c.begin()
-	return c
-}
-
-func getPrivateKey(h hash.Hash, mac string, expiry int64, keyID string, sessionCookie string) (ssh.AuthMethod, error) {
-	// Get result and encode as hexadecimal string
-	sha := hex.EncodeToString(h.Sum(nil))
-
-	if sha != mac {
-		return nil, errors.New("HMAC mismatch")
-	}
-
-	if expiry < time.Now().Unix() {
-		return nil, errors.New("Session expired")
-	}
-
-	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	mongoURI := os.Getenv("MONGO_URI")
-	if !strings.HasPrefix(mongoURI, "mongodb://") {
-		mongoURI = "mongodb://" + mongoURI
-	}
-	client, err := mongo.Connect(mctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, err
-	}
-
-	// Check the connection
-	err = client.Ping(context.TODO(), nil)
-
-	if err != nil {
-		return nil, err
-	}
-
-	log.Println("Connected to MongoDB!")
-	collection := client.Database("mist2").Collection("keys")
-
-	key := Key{}
-
-	findResult := collection.FindOne(mctx, bson.M{"_id": keyID})
-	if err := findResult.Err(); err != nil {
-		return nil, err
-	}
-	err = findResult.Decode(&key)
-	if err != nil {
-		return nil, err
-	}
-	log.Println("Fetching API key")
-	apikey, err := getApiKey(client)
-
-	internalApiUrl := os.Getenv("INTERNAL_API_URL")
-	if len(internalApiUrl) == 0 {
-		internalApiUrl = "http://api"
-	}
-	url := internalApiUrl + "/api/v1/keys/" + key.ID + "/private"
-
-	mistApiClient := http.Client{
-		Timeout: time.Second * 20,
-	}
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	req.Header.Set("Authorization", "internal "+apikey+" "+sessionCookie)
-
-	res, getErr := mistApiClient.Do(req)
-	if getErr != nil {
-		log.Fatal(getErr)
-	}
-
-	if res.Body != nil {
-		defer res.Body.Close()
-	}
-
-	body, readErr := ioutil.ReadAll(res.Body)
-	if readErr != nil {
-		log.Fatal(readErr)
-	}
-
-	keyBody := fmt.Sprintf("%s", body)
-	keyBody = strings.Replace(keyBody, `\n`, "\n", -1)
-	keyBody = strings.Replace(keyBody, `"`, "", -1)
-	priv, err := ssh.ParsePrivateKey([]byte(keyBody))
-	if err != nil {
-		return nil, err
-	}
-
-	return ssh.PublicKeys(priv), nil
-}
-
-func mongoClient() (*mongo.Client, error) {
-	mongoURI := os.Getenv("MONGO_URI")
-	if !strings.HasPrefix(mongoURI, "mongodb://") {
-		mongoURI = "mongodb://" + mongoURI
-	}
-	client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, err
-	}
-
-	// Check the connection
-	err = client.Ping(context.TODO(), nil)
-	if err != nil {
-		return nil, err
-	}
-	log.Println("Connected to MongoDB!")
-
-	return client, nil
-}
-
-func getKeyMachineAssociation(client *mongo.Client, keyMachineAssociationID string) (*KeyMachineAssociation, error) {
-	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	collection := client.Database("mist2").Collection("key_association")
-
-	docID, _ := primitive.ObjectIDFromHex(keyMachineAssociationID)
-	keyMachineAssociation := &KeyMachineAssociation{}
-
-	findResult := collection.FindOne(mctx, bson.M{"_id": docID})
-	if err := findResult.Err(); err != nil {
-		return nil, err
-	}
-
-	err := findResult.Decode(keyMachineAssociation)
-	if err != nil {
-		return nil, err
-	}
-	return keyMachineAssociation, nil
-}
-
-func getKey(client *mongo.Client, keyID string) (*Key, error) {
-	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	collection := client.Database("mist2").Collection("keys")
-
-	key := &Key{}
-
-	findResult := collection.FindOne(mctx, bson.M{"_id": keyID})
-	if err := findResult.Err(); err != nil {
-		return nil, err
-	}
-	err := findResult.Decode(key)
-	if err != nil {
-		return nil, err
-	}
-	return key, nil
-}
-
-func getApiKey(client *mongo.Client) (string, error) {
-	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	log.Println(("Getting portal from db"))
-	collection := client.Database("mist2").Collection("portal")
-
-	portal := &Portal{}
-
-	findResult := collection.FindOne(mctx, bson.M{})
-	if err := findResult.Err(); err != nil {
-		return "", err
-	}
-	log.Println(("Decoding portal"))
-	err := findResult.Decode(portal)
-	if err != nil {
-		return "", err
-	}
-	return portal.InternalApiKey, nil
-}
-
-func saveFailedAttemptKeyMachineAssociation(client *mongo.Client, keyMachineAssociationID string) error {
-	mctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	docID, err := primitive.ObjectIDFromHex(keyMachineAssociationID)
-	if err != nil {
-		return err
-	}
-
-	collection := client.Database("mist2").Collection("key_association")
-
-	_, err = collection.UpdateOne(mctx, bson.M{"_id": docID}, bson.M{"$set": bson.M{"last_used": -1}})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func getPrivateKeyFromKeyMachineAssociation(client *mongo.Client, h hash.Hash, mac string, expiry int64, keyMachineAssociationID string, sessionCookie string) (ssh.AuthMethod, error) {
-	// Get result and encode as hexadecimal string
-	sha := hex.EncodeToString(h.Sum(nil))
-
-	if sha != mac {
-		return nil, errors.New("HMAC mismatch")
-	}
-
-	if expiry < time.Now().Unix() {
-		return nil, errors.New("Session expired")
-	}
-
-	keyMachineAssociation, err := getKeyMachineAssociation(client, keyMachineAssociationID)
-	if err != nil {
-		return nil, err
-	}
-
-	key, err := getKey(client, keyMachineAssociation.Key)
-	if err != nil {
-		return nil, err
-	}
-	log.Println("Fetching API key")
-	apikey, err := getApiKey(client)
-
-	internalApiUrl := os.Getenv("INTERNAL_API_URL")
-	if len(internalApiUrl) == 0 {
-		internalApiUrl = "http://api"
-	}
-	url := internalApiUrl + "/api/v1/keys/" + key.ID + "/private"
-
-	mistApiClient := http.Client{
-		Timeout: time.Second * 20,
-	}
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	req.Header.Set("Authorization", "internal "+apikey+" "+sessionCookie)
-
-	res, getErr := mistApiClient.Do(req)
-	if getErr != nil {
-		log.Fatal(getErr)
-	}
-
-	if res.Body != nil {
-		defer res.Body.Close()
-	}
-
-	body, readErr := ioutil.ReadAll(res.Body)
-	if readErr != nil {
-		log.Fatal(readErr)
-	}
-
-	// keyBody := string(body)
-	keyBody := fmt.Sprintf("%s", body)
-	keyBody = strings.Replace(keyBody, `\n`, "\n", -1)
-	keyBody = strings.Replace(keyBody, `"`, "", -1)
-	priv, err := ssh.ParsePrivateKey([]byte(keyBody))
-	if err != nil {
-		return nil, err
-	}
-
-	return ssh.PublicKeys(priv), nil
-}
 
 func startSSH(session *ssh.Session) error {
 	// Set up terminal modes
@@ -428,26 +90,6 @@ func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websock
 	}
 }
 
-func getNextReader(ctx context.Context, conn *websocket.Conn) (io.Reader, error) {
-	mt, r, err := conn.NextReader()
-	if ctx.Err() != nil {
-		return nil, nil
-	}
-	if websocket.IsCloseError(err,
-		websocket.CloseNormalClosure,   // Normal.
-		websocket.CloseAbnormalClosure, // OpenSSH killed proxy client.
-	) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("nextreader: %v", err)
-	}
-	if mt != websocket.BinaryMessage {
-		return nil, fmt.Errorf("Non binary message")
-	}
-	return r, nil
-}
-
 func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer, session *ssh.Session) {
 	defer wg.Done()
 	defer cancel()
@@ -455,7 +97,7 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := getNextReader(ctx, conn)
+		r, err := sheller.GetNextReader(ctx, conn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -465,6 +107,10 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 		}
 		dataTypeBuf := make([]byte, 1)
 		readBytes, err := r.Read(dataTypeBuf)
+		if err != nil {
+			log.Println(err)
+			return
+		}
 		if readBytes != 1 {
 			log.Println("Unexpected number of bytes read")
 			return
@@ -478,7 +124,7 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 			}
 		case 1:
 			decoder := json.NewDecoder(r)
-			resizeMessage := terminalSize{}
+			resizeMessage := machine.TerminalSize{}
 			err := decoder.Decode(&resizeMessage)
 			if err != nil {
 				log.Println(err)
@@ -496,7 +142,7 @@ func clientToHost(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	conn.SetReadDeadline(time.Now().Add(*pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
 	for {
-		r, err := getNextReader(ctx, conn)
+		r, err := sheller.GetNextReader(ctx, conn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -537,31 +183,22 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	user := vars["user"]
 	host := vars["host"]
 	port := vars["port"]
-	keyMachineAssociationID := vars["key"]
-	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
 	mac := vars["mac"]
 
 	// Create a new HMAC by defining the hash type and the key (as byte array)
-	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(user + "," + host + "," + port + "," + keyMachineAssociationID + "," + vars["expiry"]))
+	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
 
-	client, err := mongoClient()
-	if err != nil {
-		log.Println(err)
+	// Get result and encode as hexadecimal string
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != mac {
+		log.Println("HMAC mismatch")
 		return
 	}
 
-	sessionCookie, err := r.Cookie("session.id")
-	if err != nil {
-		fmt.Println(err.Error())
-	} else {
-		fmt.Println(sessionCookie.Value)
-	}
-
-	// Get result and encode as hexadecimal string
-	priv, err := getPrivateKeyFromKeyMachineAssociation(client, h, mac, expiry, keyMachineAssociationID, sessionCookie.Value)
+	priv, err := machine.GetPrivateKey(vars)
 	if err != nil {
 		log.Println(err)
 		return
@@ -578,14 +215,9 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	connSSH, err := ssh.Dial("tcp", host+":"+port, config)
 	if err != nil {
 		log.Println("Failed to dial: " + err.Error())
-		err := saveFailedAttemptKeyMachineAssociation(client, keyMachineAssociationID)
-		if err != nil {
-			log.Println("Failed to save failed attempt on KeyMachineAssociation: " + err.Error())
-		}
 		return
 	}
 	defer connSSH.Close()
-
 	// Each ClientConn can support multiple interactive sessions,
 	// represented by a Session.
 	session, err := connSSH.NewSession()
@@ -605,7 +237,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		log.Println("Failed to create stdoutpipe: " + err.Error())
 		return
 	}
-	remoteStdout = NewCancelableReader(ctx, remoteStdout)
+	remoteStdout = cancelable.NewCancelableReader(ctx, remoteStdout)
 
 	err = startSSH(session)
 	if err != nil {
@@ -638,30 +270,26 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 
 	vars := mux.Vars(r)
 	proxy := vars["proxy"]
-	keyID := vars["key"]
 	host := vars["host"]
 	port := vars["port"]
-	expiry, _ := strconv.ParseInt(vars["expiry"], 10, 64)
 	mac := vars["mac"]
 
 	// Create a new HMAC by defining the hash type and the key (as byte array)
-	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(proxy + "," + keyID + "," + host + "," + port + "," + vars["expiry"]))
-
-	sessionCookie, err := r.Cookie("session.id")
-	if err != nil {
-		fmt.Println(err.Error())
-	} else {
-		fmt.Println(sessionCookie.Value)
-	}
+	h.Write([]byte(proxy + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
 
 	// Get result and encode as hexadecimal string
-	priv, err := getPrivateKey(h, mac, expiry, keyID, sessionCookie.Value)
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != mac {
+		log.Println("HMAC mismatch")
+		return
+	}
+
+	priv, err := machine.GetPrivateKey(vars)
 	if err != nil {
 		log.Println(err)
-		return
 	}
 	// Setup the tunnel, but do not yet start it yet.
 	tunnel := sshtunnel.NewSSHTunnel(
@@ -719,8 +347,8 @@ func main() {
 
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
-	m.HandleFunc("/ssh/{user}/{host}/{port}/{key}/{expiry}/{mac}", handleSSH)
-	m.HandleFunc("/proxy/{proxy}/{key}/{host}/{port}/{expiry}/{mac}", handleVNC)
+	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleSSH)
+	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,
 		Handler:        m,
