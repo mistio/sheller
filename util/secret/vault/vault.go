@@ -15,9 +15,15 @@ func GetSecret(t Token, p SecretPath, expiry int64) (Secret, error) {
 	if expiry < time.Now().Unix() {
 		return nil, errors.New("session expired")
 	}
+	if t == "" {
+		return nil, errors.New("token is empty")
+	}
 	req, err := http.NewRequest("GET", string(p), nil)
 	if err != nil {
 		return nil, err
+	}
+	if p == "" {
+		return nil, errors.New("secret path is empty")
 	}
 	req.Header.Set("X-Vault-Token", string(t))
 	resp, err := http.DefaultClient.Do(req)
@@ -32,11 +38,11 @@ func GetSecret(t Token, p SecretPath, expiry int64) (Secret, error) {
 	}
 	data, ok := r["data"].(map[string]any)
 	if !ok {
-		return Secret{}, errors.New("vault response for secret not in expected form (first map)")
+		return Secret{}, errors.New("vault response for secret not in expected format")
 	}
 	secret, ok := data["data"].(map[string]any)
 	if !ok {
-		return Secret{}, errors.New("vault response for secret not in expected form (second map)")
+		return Secret{}, errors.New("vault response for secret not in expected format")
 	}
 	return Secret(secret), nil
 }
