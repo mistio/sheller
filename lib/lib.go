@@ -15,6 +15,7 @@ package lib
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 
@@ -43,4 +44,24 @@ func File2WS(ctx context.Context, cancel func(), src io.Reader, dst *websocket.C
 			return err
 		}
 	}
+}
+
+func GetNextReader(ctx context.Context, conn *websocket.Conn) (io.Reader, error) {
+	mt, r, err := conn.NextReader()
+	if ctx.Err() != nil {
+		return nil, nil
+	}
+	if websocket.IsCloseError(err,
+		websocket.CloseNormalClosure,   // Normal.
+		websocket.CloseAbnormalClosure, // OpenSSH killed proxy client.
+	) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("nextreader: %v", err)
+	}
+	if mt != websocket.BinaryMessage {
+		return nil, fmt.Errorf("Non binary message")
+	}
+	return r, nil
 }
