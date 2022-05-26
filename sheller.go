@@ -28,7 +28,7 @@ import (
 	"os"
 	sheller "sheller/lib"
 	"sheller/machine"
-	shellerio "sheller/util/io"
+	"sheller/util/cancelable"
 	"strconv"
 	"sync"
 	"time"
@@ -237,7 +237,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		log.Println("Failed to create stdoutpipe: " + err.Error())
 		return
 	}
-	remoteStdout = shellerio.NewCancelableReader(ctx, remoteStdout)
+	remoteStdout = cancelable.NewCancelableReader(ctx, remoteStdout)
 
 	err = startSSH(session)
 	if err != nil {
