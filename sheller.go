@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -27,9 +28,11 @@ import (
 	"net/http"
 	"os"
 	sheller "sheller/lib"
+	"sheller/lxd"
 	"sheller/machine"
 	"sheller/util/cancelable"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,9 +50,136 @@ var (
 	pongTimeout      = flag.Duration("pong_timeout", 10*time.Second, "Pong message timeout.")
 	// Send pings to peer with this period. Must be less than pongTimeout.
 	pingPeriod = (*pongTimeout * 9) / 10
-
-	upgrader websocket.Upgrader
+	upgrader   websocket.Upgrader
 )
+
+func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, cacheBuff *bytes.Buffer, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer cancel()
+	for {
+		r, err := sheller.GetNextReader(ctx, containerConn)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		if r == nil {
+			if err := clientConn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
+			} else if err != nil {
+				log.Printf("Error sending close message: %v\n", err)
+			}
+			return
+		}
+
+		buf := make([]byte, 1024, 10*1024)
+		_, err = r.Read(buf)
+		if err != nil {
+			log.Println(err)
+		}
+		s := strings.Replace(string(buf), cacheBuff.String(), "", -1)
+		messageBytes := []byte(s)
+		messageBytes = append([]byte{0}, messageBytes...)
+		clientConn.WriteMessage(websocket.BinaryMessage, messageBytes)
+	}
+}
+
+func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, ControlConn *websocket.Conn, cacheBuff *bytes.Buffer, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer cancel()
+	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	clientConn.SetPongHandler(func(string) error { clientConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	containerConn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	containerConn.SetPongHandler(func(string) error { containerConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	for {
+		r, err := sheller.GetNextReader(ctx, clientConn)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		if r == nil {
+			return
+		}
+		dataTypeBuf := make([]byte, 1)
+		_, err = r.Read(dataTypeBuf)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		switch dataTypeBuf[0] {
+		case 0:
+			dataLength, err := r.Read(dataTypeBuf)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			if dataLength == -1 {
+				log.Println("failed to get the correct number of bytes read, ignoring message")
+				continue
+			}
+			keystroke := dataTypeBuf
+			_, err = cacheBuff.Write(keystroke)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			err = containerConn.WriteMessage(websocket.BinaryMessage, cacheBuff.Bytes())
+			if err != nil {
+				log.Printf("failed to write %v bytes to tty: %s", len(keystroke), err)
+			}
+			cacheBuff.Reset()
+			cacheBuff.Write([]byte{0})
+		case 1:
+			TerminalSize := lxd.DecodeResizeMessage(r)
+			lxd.Control(ControlConn, TerminalSize)
+			continue
+		}
+	}
+}
+
+func handleLXD(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	vars := mux.Vars(r)
+	name := vars["name"]
+	cluster := vars["cluster"]
+	host := vars["host"]
+	port := vars["port"]
+	mac := vars["mac"]
+
+	// Create a new HMAC by defining the hash type and the key (as byte array)
+	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
+
+	// Write Data to it
+	h.Write([]byte(name + "," + cluster + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
+
+	// Get result and encode as hexadecimal string
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != mac {
+		log.Println("HMAC mismatch")
+		return
+	}
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print(err)
+	}
+	var cacheBuff bytes.Buffer
+	cacheBuff.Write([]byte{0})
+	conn, controlConn, err := lxd.Cfg(vars)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	defer conn.Close()
+	defer clientConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	go containerToClientLXD(ctx, cancel, clientConn, conn, &cacheBuff, &wg)
+	go clientToContainerLXD(ctx, cancel, clientConn, conn, controlConn, &cacheBuff, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, conn, &wg)
+	wg.Wait()
+}
 
 func startSSH(session *ssh.Session) error {
 	// Set up terminal modes
@@ -347,6 +477,7 @@ func main() {
 
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
+	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
 	s := &http.Server{
