@@ -6,6 +6,7 @@ require (
 	github.com/elliotchance/sshtunnel v1.3.1
 	github.com/gorilla/mux v1.8.0
 	github.com/gorilla/websocket v1.5.0
+	github.com/lxc/lxd v0.0.0-20220526200742-11ace6e6c1b3
 	golang.org/x/crypto v0.0.0-20220525230936-793ad666bf5e
 )
 
@@ -18,7 +19,6 @@ require (
 	github.com/julienschmidt/httprouter v1.3.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
 	github.com/kr/fs v0.1.0 // indirect
-	github.com/lxc/lxd v0.0.0-20220526200742-11ace6e6c1b3 // indirect
 	github.com/pborman/uuid v1.2.1 // indirect
 	github.com/pkg/sftp v1.13.4 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect

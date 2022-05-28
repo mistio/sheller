@@ -60,7 +60,6 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 		r, err := sheller.GetNextReader(ctx, containerConn)
 		if err != nil {
 			log.Println(err)
-			return
 		}
 		if r == nil {
 			if err := clientConn.WriteControl(websocket.CloseMessage,
@@ -71,7 +70,6 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 			}
 			return
 		}
-
 		buf := make([]byte, 1024, 10*1024)
 		_, err = r.Read(buf)
 		if err != nil {
