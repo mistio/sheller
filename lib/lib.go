@@ -61,6 +61,11 @@ func GetNextReader(ctx context.Context, conn *websocket.Conn) (io.Reader, error)
 		return nil, fmt.Errorf("nextreader: %v", err)
 	}
 	if mt != websocket.BinaryMessage {
+		b := make([]byte, 1)
+		r.Read(b)
+		if b[0] == 0 {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("Non binary message")
 	}
 	return r, nil
