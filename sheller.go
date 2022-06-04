@@ -185,8 +185,17 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	port := vars["port"]
 	mac := vars["mac"]
 
+	sign := []byte(os.Getenv("INTERNAL_KEYS_SIGN"))
+	if len(sign) == 0 {
+		signFromfile, err := os.ReadFile("/secrets/sign.txt")
+		if err != nil {
+			return
+		}
+		sign = signFromfile
+	}
+
 	// Create a new HMAC by defining the hash type and the key (as byte array)
-	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
+	h := hmac.New(sha256.New, []byte(sign))
 
 	// Write Data to it
 	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
@@ -274,8 +283,17 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	port := vars["port"]
 	mac := vars["mac"]
 
+	sign := []byte(os.Getenv("INTERNAL_KEYS_SIGN"))
+	if len(sign) == 0 {
+		signFromfile, err := os.ReadFile("/secrets/sign.txt")
+		if err != nil {
+			return
+		}
+		sign = signFromfile
+	}
+
 	// Create a new HMAC by defining the hash type and the key (as byte array)
-	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
+	h := hmac.New(sha256.New, sign)
 
 	// Write Data to it
 	h.Write([]byte(proxy + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))

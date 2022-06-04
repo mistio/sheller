@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"os"
 )
 
 // PKCS5Padding adds padding to the plaintext to make it a multiple of the block size
@@ -27,9 +26,10 @@ func PKCS5UnPadding(src []byte) []byte {
 
 // Encrypt encrypts the plaintext,the input salt should be a random string that is appended to the plaintext
 // that gets fed into the one-way function that hashes it.
-func Encrypt(plaintext, salt string) (string, error) {
+func Encrypt(plaintext string, secret, salt []byte) (string, error) {
+
 	h := sha256.New()
-	h.Write([]byte(os.Getenv("INTERNAL_KEYS_SECRET")))
+	h.Write(append(secret, salt...))
 	key := h.Sum(nil)
 	plaintextBytes := PKCS5Padding([]byte(plaintext), aes.BlockSize)
 	block, err := aes.NewCipher(key)
@@ -49,11 +49,10 @@ func Encrypt(plaintext, salt string) (string, error) {
 	return hex.EncodeToString(ciphertext), nil
 }
 
-func Decrypt(ciphertext, salt string) (string, error) {
+func Decrypt(ciphertext string, secret, salt []byte) (string, error) {
 
 	h := sha256.New()
-	// have to check if the secret is hex encoded
-	h.Write([]byte(os.Getenv("INTERNAL_KEYS_SECRET") + salt))
+	h.Write(append(secret, salt...))
 	key := h.Sum(nil)
 	ciphertext_bytes, err := hex.DecodeString(ciphertext)
 	if err != nil {

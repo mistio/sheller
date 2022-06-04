@@ -2,6 +2,7 @@ package machine
 
 import (
 	"errors"
+	"os"
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
 	"strconv"
@@ -20,7 +21,15 @@ type KeyPair struct {
 }
 
 func GetPrivateKey(vars map[string]string) (ssh.AuthMethod, error) {
-	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
+	secret := []byte(os.Getenv("INTERNAL_KEYS_SECRET"))
+	if len(secret) == 0 {
+		secretFromFile, err := os.ReadFile("secrets/secret.txt")
+		if err != nil {
+			return nil, err
+		}
+		secret = secretFromFile
+	}
+	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], secret, []byte{})
 	if err != nil {
 		return nil, err
 	}
