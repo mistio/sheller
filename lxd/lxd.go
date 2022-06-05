@@ -55,9 +55,8 @@ func Cfg(vars map[string]string) (*websocket.Conn, *websocket.Conn, error) {
 	}
 
 	ConnArgs := &lxd.ConnectionArgs{
-		TLSClientCert:      ClientCert,
-		TLSClientKey:       ClientKey,
-		InsecureSkipVerify: true,
+		TLSClientCert: ClientCert,
+		TLSClientKey:  ClientKey,
 	}
 
 	url := fmt.Sprintf("https://%s:%s", Host, Port)
