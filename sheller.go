@@ -14,7 +14,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -32,7 +31,6 @@ import (
 	"sheller/machine"
 	"sheller/util/cancelable"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -53,7 +51,7 @@ var (
 	upgrader   websocket.Upgrader
 )
 
-func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, cacheBuff *bytes.Buffer, wg *sync.WaitGroup) {
+func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
 	for {
@@ -70,19 +68,17 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 			}
 			return
 		}
-		buf := make([]byte, 1024, 10*1024)
-		_, err = r.Read(buf)
+		outputBuffer := make([]byte, 0, 10*1024)
+		_, err = r.Read(outputBuffer)
 		if err != nil {
 			log.Println(err)
 		}
-		s := strings.Replace(string(buf), cacheBuff.String(), "", -1)
-		messageBytes := []byte(s)
-		messageBytes = append([]byte{0}, messageBytes...)
-		clientConn.WriteMessage(websocket.BinaryMessage, messageBytes)
+		// append 0 byte to indicate data
+		clientConn.WriteMessage(websocket.BinaryMessage, append([]byte{0}, outputBuffer...))
 	}
 }
 
-func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, ControlConn *websocket.Conn, cacheBuff *bytes.Buffer, wg *sync.WaitGroup) {
+func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, ControlConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
 	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
@@ -106,7 +102,8 @@ func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, client
 		}
 		switch dataTypeBuf[0] {
 		case 0:
-			dataLength, err := r.Read(dataTypeBuf)
+			var keystroke []byte
+			dataLength, err := r.Read(keystroke)
 			if err != nil {
 				log.Println(err)
 				return
@@ -115,21 +112,23 @@ func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, client
 				log.Println("failed to get the correct number of bytes read, ignoring message")
 				continue
 			}
-			keystroke := dataTypeBuf
-			_, err = cacheBuff.Write(keystroke)
+			err = containerConn.WriteMessage(websocket.BinaryMessage, keystroke)
+			if err != nil {
+				log.Printf("failed to write to tty: %s", err)
+			}
+		case 1:
+			decoder := json.NewDecoder(r)
+			resizeMessage := machine.TerminalSize{}
+			err := decoder.Decode(&resizeMessage)
 			if err != nil {
 				log.Println(err)
 				return
 			}
-			err = containerConn.WriteMessage(websocket.BinaryMessage, cacheBuff.Bytes())
+			err = lxd.ResizeTerminal(ControlConn, resizeMessage)
 			if err != nil {
-				log.Printf("failed to write %v bytes to tty: %s", len(keystroke), err)
+				log.Println(err)
+				return
 			}
-			cacheBuff.Reset()
-			cacheBuff.Write([]byte{0})
-		case 1:
-			TerminalSize := lxd.DecodeResizeMessage(r)
-			lxd.Control(ControlConn, TerminalSize)
 			continue
 		}
 	}
@@ -159,23 +158,25 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	}
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Print(err)
+		log.Println(err)
+		return
 	}
-	var cacheBuff bytes.Buffer
-	cacheBuff.Write([]byte{0})
-	conn, controlConn, err := lxd.Cfg(vars)
+	// Use websocketStream to send commands and read results from
+	// the terminal.
+	// Use controlConn to send control characters to the terminal.
+	websocketStream, controlConn, err := lxd.GetConnections(vars)
 	if err != nil {
 		log.Print(err)
 		return
 	}
-	defer conn.Close()
+	defer websocketStream.Close()
 	defer clientConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
-	go containerToClientLXD(ctx, cancel, clientConn, conn, &cacheBuff, &wg)
-	go clientToContainerLXD(ctx, cancel, clientConn, conn, controlConn, &cacheBuff, &wg)
+	go containerToClientLXD(ctx, cancel, clientConn, websocketStream, &wg)
+	go clientToContainerLXD(ctx, cancel, clientConn, websocketStream, controlConn, &wg)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
-	go pingWebsocket(ctx, cancel, conn, &wg)
+	go pingWebsocket(ctx, cancel, websocketStream, &wg)
 	wg.Wait()
 }
 

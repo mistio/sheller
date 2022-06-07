@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sheller/machine"
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
@@ -16,12 +15,10 @@ import (
 	"github.com/lxc/lxd/shared/api"
 )
 
-type ConnectionArgs lxd.ConnectionArgs
-
-func Cfg(vars map[string]string) (*websocket.Conn, *websocket.Conn, error) {
+func GetConnectionParameters(vars map[string]string) (string, *lxd.ConnectionArgs, error) {
 	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
 	if err != nil {
-		return nil, nil, err
+		return "", &lxd.ConnectionArgs{}, err
 	}
 	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
 	token := vault.Token(plaintextParts[0])
@@ -30,36 +27,49 @@ func Cfg(vars map[string]string) (*websocket.Conn, *websocket.Conn, error) {
 	key_path := vault.SecretPath(plaintextParts[3])
 	expiry, err := strconv.ParseInt(vars["expiry"], 10, 64)
 	if err != nil {
-		return nil, nil, err
+		return "", &lxd.ConnectionArgs{}, err
 	}
 	secretPath := vault_addr + "/v1/" + vault_secret_engine_path + "/data/" + key_path
 	secretData, err := vault.GetSecret(token, secretPath, expiry)
 	if err != nil {
-		return nil, nil, err
+		return "", &lxd.ConnectionArgs{}, err
+	}
+	ConnArgs := &lxd.ConnectionArgs{}
+	_, hasCaCert := secretData["ca_cert_file"]
+	if hasCaCert {
+		CaCert, ok := secretData["ca_cert_file"].(string)
+		if !ok {
+			return "", &lxd.ConnectionArgs{}, errors.New("can't read ca certificate")
+		}
+		ConnArgs.TLSCA = CaCert
 	}
 	ClientCert, ok := secretData["cert_file"].(string)
 	if !ok {
-		return nil, nil, errors.New("can't read client certificate")
+		return "", &lxd.ConnectionArgs{}, errors.New("can't read client certificate")
 	}
+	ConnArgs.TLSClientCert = ClientCert
 	ClientKey, ok := secretData["key_file"].(string)
 	if !ok {
-		return nil, nil, errors.New("can't read client key")
+		return "", &lxd.ConnectionArgs{}, errors.New("can't read client key")
 	}
+	ConnArgs.TLSClientKey = ClientKey
 	Host, ok := secretData["host"].(string)
 	if !ok {
-		return nil, nil, errors.New("can't read host")
+		return "", &lxd.ConnectionArgs{}, errors.New("can't read host")
 	}
 	Port, ok := secretData["port"].(string)
 	if !ok {
-		return nil, nil, errors.New("can't read port'")
-	}
-
-	ConnArgs := &lxd.ConnectionArgs{
-		TLSClientCert: ClientCert,
-		TLSClientKey:  ClientKey,
+		return "", &lxd.ConnectionArgs{}, errors.New("can't read port'")
 	}
 
 	url := fmt.Sprintf("https://%s:%s", Host, Port)
+	return url, ConnArgs, nil
+}
+func GetConnections(vars map[string]string) (*websocket.Conn, *websocket.Conn, error) {
+	url, ConnArgs, err := GetConnectionParameters(vars)
+	if err != nil {
+		return nil, nil, err
+	}
 	c, err := lxd.ConnectLXD(url, ConnArgs)
 	if err != nil {
 		return nil, nil, err
@@ -86,43 +96,34 @@ func Cfg(vars map[string]string) (*websocket.Conn, *websocket.Conn, error) {
 		return nil, nil, errors.
 			New("secret of websocket connection to bridge pty not in expected format")
 	}
-	conn, err := c.GetOperationWebsocket(op.Get().ID, secret_0)
-	if err != nil {
-		return nil, nil, err
-	}
 	secret_control, ok := secret["control"].(string)
 	if !ok {
 		return nil, nil, errors.
 			New("secret of websocket control connection not in expected format")
 	}
+	websocketStream, err := c.GetOperationWebsocket(op.Get().ID, secret_0)
+	if err != nil {
+		return nil, nil, err
+	}
 	controlConn, err := c.GetOperationWebsocket(op.Get().ID, secret_control)
 	if err != nil {
 		return nil, nil, err
 	}
-	return conn, controlConn, nil
+	return websocketStream, controlConn, nil
 }
-func Control(conn *websocket.Conn, size machine.TerminalSize) {
+func ResizeTerminal(conn *websocket.Conn, size machine.TerminalSize) error {
 	msg := api.ContainerExecControl{}
 	msg.Command = "window-resize"
 	msg.Args = make(map[string]string)
 	msg.Args["width"] = strconv.Itoa(size.Width)
 	msg.Args["height"] = strconv.Itoa(size.Height)
-	buf, _ := json.Marshal(msg)
-	conn.WriteMessage(websocket.TextMessage, buf)
-}
-
-func DecodeResizeMessage(r io.Reader) machine.TerminalSize {
-	b := make([]byte, 1)
-	resizeMessage := ""
-	for {
-		_, err := r.Read(b)
-		if err == io.EOF {
-			break
-		}
-		resizeMessage += string(b)
+	buf, err := json.Marshal(msg)
+	if err != nil {
+		return err
 	}
-	dec := json.NewDecoder(strings.NewReader(resizeMessage))
-	var m machine.TerminalSize
-	dec.Decode(&m)
-	return m
+	err = conn.WriteMessage(websocket.TextMessage, buf)
+	if err != nil {
+		return err
+	}
+	return nil
 }
