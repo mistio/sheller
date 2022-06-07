@@ -68,7 +68,7 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 			}
 			return
 		}
-		outputBuffer := make([]byte, 0, 10*1024)
+		outputBuffer := make([]byte, 10*1024)
 		_, err = r.Read(outputBuffer)
 		if err != nil {
 			log.Println(err)
@@ -102,7 +102,7 @@ func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, client
 		}
 		switch dataTypeBuf[0] {
 		case 0:
-			var keystroke []byte
+			keystroke := make([]byte, 1)
 			dataLength, err := r.Read(keystroke)
 			if err != nil {
 				log.Println(err)
