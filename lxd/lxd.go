@@ -75,13 +75,13 @@ func GetConnections(vars map[string]string) (*websocket.Conn, *websocket.Conn, e
 		return nil, nil, err
 	}
 
-	req := api.ContainerExecPost{
+	req := api.InstanceExecPost{
 		Command:     []string{"/bin/bash"},
 		Interactive: true,
 		WaitForWS:   true,
 	}
 
-	op, err := c.ExecContainer(vars["name"], req, nil)
+	op, err := c.ExecInstance(vars["name"], req, nil)
 	if err != nil {
 		return nil, nil, err
 	}
