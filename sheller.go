@@ -54,11 +54,13 @@ var (
 func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
+
 	for {
 		r, err := sheller.GetNextReader(ctx, containerConn)
 		if err != nil {
 			log.Println(err)
 		}
+
 		if r == nil {
 			if err := clientConn.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
@@ -68,13 +70,13 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 			}
 			return
 		}
-		outputBuffer := make([]byte, 10*1024)
+
+		outputBuffer := make([]byte, 1000, 10*1024)
 		_, err = r.Read(outputBuffer)
 		if err != nil {
 			log.Println(err)
 		}
-		// append 0 byte to indicate data
-		clientConn.WriteMessage(websocket.BinaryMessage, append([]byte{0}, outputBuffer...))
+		clientConn.WriteMessage(websocket.BinaryMessage, outputBuffer)
 	}
 }
 
@@ -164,7 +166,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	// Use websocketStream to send commands and read results from
 	// the terminal.
 	// Use controlConn to send control characters to the terminal.
-	websocketStream, controlConn, err := lxd.GetConnections(vars)
+	websocketStream, controlConn, err := lxd.EstablishIOWebsockets(vars)
 	if err != nil {
 		log.Print(err)
 		return

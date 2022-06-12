@@ -15,7 +15,7 @@ import (
 	"github.com/lxc/lxd/shared/api"
 )
 
-func GetConnectionParameters(vars map[string]string) (string, *lxd.ConnectionArgs, error) {
+func PrepareConnectionParameters(vars map[string]string) (string, *lxd.ConnectionArgs, error) {
 	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
 	if err != nil {
 		return "", &lxd.ConnectionArgs{}, err
@@ -65,8 +65,8 @@ func GetConnectionParameters(vars map[string]string) (string, *lxd.ConnectionArg
 	url := fmt.Sprintf("https://%s:%s", Host, Port)
 	return url, ConnArgs, nil
 }
-func GetConnections(vars map[string]string) (*websocket.Conn, *websocket.Conn, error) {
-	url, ConnArgs, err := GetConnectionParameters(vars)
+func EstablishIOWebsockets(vars map[string]string) (*websocket.Conn, *websocket.Conn, error) {
+	url, ConnArgs, err := PrepareConnectionParameters(vars)
 	if err != nil {
 		return nil, nil, err
 	}
