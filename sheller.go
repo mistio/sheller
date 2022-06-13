@@ -71,10 +71,12 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 			return
 		}
 
-		outputBuffer := make([]byte, 1000, 10*1024)
-		_, err = r.Read(outputBuffer)
-		if err != nil {
+		outputBuffer := make([]byte, 32*1024)
+		if n, err := r.Read(outputBuffer); err != nil {
 			log.Println(err)
+			return
+		} else {
+			outputBuffer = outputBuffer[:n]
 		}
 		clientConn.WriteMessage(websocket.BinaryMessage, outputBuffer)
 	}
