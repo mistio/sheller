@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sheller/machine"
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
@@ -74,9 +75,12 @@ func EstablishIOWebsockets(vars map[string]string) (*websocket.Conn, *websocket.
 	if err != nil {
 		return nil, nil, err
 	}
-
+	command := strings.Fields(os.Getenv("COMMAND"))
+	if len(command) == 0 {
+		command = []string{"/bin/bash"}
+	}
 	req := api.InstanceExecPost{
-		Command:     []string{"/bin/bash"},
+		Command:     command,
 		Interactive: true,
 		WaitForWS:   true,
 	}
