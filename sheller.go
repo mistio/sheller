@@ -14,6 +14,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -51,16 +53,16 @@ var (
 	upgrader   websocket.Upgrader
 )
 
-func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, ControlConn *websocket.Conn, wg *sync.WaitGroup) {
+func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
-
+	b := bytes.Buffer{}
+	writer := bufio.NewWriter(&b)
 	for {
 		r, err := sheller.GetNextReader(ctx, containerConn)
 		if err != nil {
 			log.Println(err)
 		}
-
 		if r == nil {
 			if err := clientConn.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
@@ -70,18 +72,17 @@ func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, client
 			}
 			return
 		}
-
-		outputBuffer := make([]byte, 32*1024)
-		if n, err := r.Read(outputBuffer); err != nil {
-			log.Println(err)
+		if _, err := io.Copy(writer, r); err != nil {
+			log.Printf("Reading from websocket: %v", err)
 			return
-		} else {
-			outputBuffer = outputBuffer[:n]
 		}
-		clientConn.WriteMessage(websocket.BinaryMessage, outputBuffer)
+		if err != nil {
+			log.Println(err)
+		}
+		clientConn.WriteMessage(websocket.BinaryMessage, b.Bytes())
+		b.Reset()
 	}
 }
-
 func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, ControlConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
@@ -178,7 +179,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	defer clientConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
-	go containerToClientLXD(ctx, cancel, clientConn, websocketStream, controlConn, &wg)
+	go containerToClientLXD(ctx, cancel, clientConn, websocketStream, &wg)
 	go clientToContainerLXD(ctx, cancel, clientConn, websocketStream, controlConn, &wg)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, websocketStream, &wg)
