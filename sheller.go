@@ -174,6 +174,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer websocketStream.Close()
+	defer controlConn.Close()
 	defer clientConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
