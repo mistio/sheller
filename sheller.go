@@ -195,7 +195,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	mac := vars["mac"]
 
 	// Create a new HMAC by defining the hash type and the key (as byte array)
-	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
+	h := hmac.New(sha256.New, []byte(os.Getenv("SIGN_KEY")))
 
 	// Write Data to it
 	h.Write([]byte(name + "," + cluster + "," + machineID + "," + host + "," + port + "," + vars["expiry"] + "," + encrypted_msg))
