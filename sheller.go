@@ -185,8 +185,10 @@ func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, client
 
 func handleDocker(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
+	log.Println(vars)
 	name := vars["name"]
 	cluster := vars["cluster"]
+	machineID := vars["machineID"]
 	host := vars["host"]
 	port := vars["port"]
 	encrypted_msg := vars["encrypted_msg"]
@@ -196,7 +198,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("SECRET")))
 
 	// Write Data to it
-	h.Write([]byte(name + "," + cluster + "," + host + "," + port + "," + vars["expiry"] + "," + encrypted_msg))
+	h.Write([]byte(name + "," + cluster + "," + machineID + "," + host + "," + port + "," + vars["expiry"] + "," + encrypted_msg))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -569,8 +571,8 @@ func main() {
 
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
-	m.HandleFunc("/docker-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
-	m.HandleFunc("/lxd-exec/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
+	m.HandleFunc("/docker-exec/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
+	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
 	s := &http.Server{
