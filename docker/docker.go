@@ -92,7 +92,7 @@ func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Respon
 		Name:      vars["name"],
 		Cluster:   vars["cluster"],
 	}
-	cfg, err := tls.CreateTLSConfig([]byte(secret.Cert), []byte(secret.Key), []byte(secret.Key))
+	cfg, err := tls.CreateTLSConfig([]byte(secret.Cert), []byte(secret.Key), []byte(secret.CA))
 	if err != nil {
 		return nil, nil, err
 	}

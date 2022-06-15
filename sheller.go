@@ -185,7 +185,6 @@ func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, client
 
 func handleDocker(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	log.Println(vars)
 	name := vars["name"]
 	cluster := vars["cluster"]
 	machineID := vars["machineID"]
