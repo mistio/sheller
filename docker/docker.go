@@ -90,10 +90,10 @@ func PrepareConnectionParameters(vars map[string]string) (connParameters, error)
 	} else {
 		return connParameters{}, errors.New("host not found")
 	}
-	if port, exists := secretData["host"]; exists {
+	if port, exists := secretData["port"]; exists {
 		Port, ok := port.(string)
 		if !ok {
-			return connParameters{}, errors.New("can't read host")
+			return connParameters{}, errors.New("can't read port")
 		}
 		params.Port = Port
 	} else {
@@ -115,19 +115,19 @@ func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Respon
 		Name:      vars["name"],
 		Cluster:   vars["cluster"],
 	}
+	dialer := &websocket.Dialer{
+		Proxy:            http.ProxyFromEnvironment,
+		HandshakeTimeout: 2 * time.Second,
+	}
 	if params.CA == "" && params.Cert == "" && params.Key == "" {
 		opts.Scheme = "http"
 	} else {
 		opts.Scheme = "https"
-	}
-	cfg, err := tls.CreateTLSConfig([]byte(params.Cert), []byte(params.Key), []byte(params.CA))
-	if err != nil {
-		return nil, nil, err
-	}
-	dialer := &websocket.Dialer{
-		Proxy:            http.ProxyFromEnvironment,
-		HandshakeTimeout: 2 * time.Second,
-		TLSClientConfig:  cfg,
+		cfg, err := tls.CreateTLSConfig([]byte(params.Cert), []byte(params.Key), []byte(params.CA))
+		if err != nil {
+			return nil, nil, err
+		}
+		dialer.TLSClientConfig = cfg
 	}
 	req, err := attachRequest(opts, &attachOptions{
 		logs:   true,
