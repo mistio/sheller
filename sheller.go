@@ -134,7 +134,6 @@ func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, client
 				log.Println(err)
 				return
 			}
-			continue
 		}
 	}
 }
