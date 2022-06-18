@@ -23,12 +23,20 @@ type secret struct {
 	Port string
 }
 
-type attachOptions struct {
+type connectionArgs struct {
 	Host      string
 	Port      string
 	MachineID string
 	Name      string
 	Cluster   string
+}
+
+type attachOptions struct {
+	logs   bool
+	stream bool
+	stdin  bool
+	stdout bool
+	stderr bool
 }
 
 func PrepareConnectionParameters(vars map[string]string) (secret, error) {
@@ -85,7 +93,7 @@ func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Respon
 		return nil, nil, err
 	}
 	machineID := vars["machineID"]
-	opts := &attachOptions{
+	opts := &connectionArgs{
 		Host:      secret.Host,
 		Port:      secret.Port,
 		MachineID: machineID,
@@ -101,7 +109,13 @@ func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Respon
 		HandshakeTimeout: 2 * time.Second,
 		TLSClientConfig:  cfg,
 	}
-	req, err := attachRequest(opts)
+	req, err := attachRequest(opts, &attachOptions{
+		logs:   true,
+		stream: true,
+		stdin:  true,
+		stdout: true,
+		stderr: true,
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -111,11 +125,11 @@ func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Respon
 	}
 	return podConn, Response, nil
 }
-func attachRequest(opts *attachOptions) (*http.Request, error) {
+func attachRequest(args *connectionArgs, opts *attachOptions) (*http.Request, error) {
 	//create empty url to be populated
 	u := &url.URL{}
 	u.Scheme = "https"
-	u.Host = opts.Host + ":" + opts.Port
+	u.Host = args.Host + ":" + args.Port
 	switch u.Scheme {
 	case "https":
 		u.Scheme = "wss"
@@ -125,10 +139,24 @@ func attachRequest(opts *attachOptions) (*http.Request, error) {
 		return nil, fmt.Errorf("unrecognised URL scheme in %v", u)
 	}
 
-	u.Path = fmt.Sprintf("/containers/%s/attach/ws", opts.MachineID)
-	u.RawQuery = "logs=1&stdin=1&stdout=1&stderr=1&stream=1"
-	// todo: enable customized options
-
+	u.Path = fmt.Sprintf("/containers/%s/attach/ws", args.MachineID)
+	rawQuery := "stdout=true&tty=true"
+	if opts.logs {
+		rawQuery += "&logs=true"
+	}
+	if opts.stream {
+		rawQuery += "&stream=true"
+	}
+	if opts.stdin {
+		rawQuery += "&stdin=true"
+	}
+	if opts.stdout {
+		rawQuery += "&stdout=true"
+	}
+	if opts.stderr {
+		rawQuery += "&stderr=true"
+	}
+	u.RawQuery = rawQuery
 	return &http.Request{
 		Method: http.MethodGet,
 		URL:    u,
