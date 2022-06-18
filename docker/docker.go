@@ -15,7 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type secret struct {
+type connParameters struct {
 	CA   string
 	Cert string
 	Key  string
@@ -24,6 +24,7 @@ type secret struct {
 }
 
 type connectionArgs struct {
+	Scheme    string
 	Host      string
 	Port      string
 	MachineID string
@@ -39,10 +40,10 @@ type attachOptions struct {
 	stderr bool
 }
 
-func PrepareConnectionParameters(vars map[string]string) (secret, error) {
+func PrepareConnectionParameters(vars map[string]string) (connParameters, error) {
 	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
 	if err != nil {
-		return secret{}, err
+		return connParameters{}, err
 	}
 	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
 	token := vault.Token(plaintextParts[0])
@@ -51,56 +52,75 @@ func PrepareConnectionParameters(vars map[string]string) (secret, error) {
 	key_path := vault.SecretPath(plaintextParts[3])
 	expiry, err := strconv.ParseInt(vars["expiry"], 10, 64)
 	if err != nil {
-		return secret{}, err
+		return connParameters{}, err
 	}
 	secretPath := vault_addr + "/v1/" + vault_secret_engine_path + "/data/" + key_path
 	secretData, err := vault.GetSecret(token, secretPath, expiry)
 	if err != nil {
-		return secret{}, err
+		return connParameters{}, err
 	}
-	CaCert, ok := secretData["ca_cert_file"].(string)
-	if !ok {
-		return secret{}, errors.New("can't read ca certificate")
+	params := connParameters{}
+	if CA, exists := secretData["ca_cert_file"]; exists {
+		CaCert, ok := CA.(string)
+		if !ok {
+			return connParameters{}, errors.New("can't read ca certificate")
+		}
+		params.CA = CaCert
 	}
-	ClientCert, ok := secretData["cert_file"].(string)
-	if !ok {
-		return secret{}, errors.New("can't read client certificate")
+	if cert, exists := secretData["cert_file"]; exists {
+		ClientCert, ok := cert.(string)
+		if !ok {
+			return connParameters{}, errors.New("can't read ca certificate")
+		}
+		params.Cert = ClientCert
 	}
-	ClientKey, ok := secretData["key_file"].(string)
-	if !ok {
-		return secret{}, errors.New("can't read client key")
+	if key, exists := secretData["key_file"]; exists {
+		ClientKey, ok := key.(string)
+		if !ok {
+			return connParameters{}, errors.New("can't read ca certificate")
+		}
+		params.Cert = ClientKey
 	}
-	Host, ok := secretData["host"].(string)
-	if !ok {
-		return secret{}, errors.New("can't read host")
+	if host, exists := secretData["host"]; exists {
+		Host, ok := host.(string)
+		if !ok {
+			return connParameters{}, errors.New("can't read host")
+		}
+		params.Host = Host
+	} else {
+		return connParameters{}, errors.New("host not found")
 	}
-	Port, ok := secretData["port"].(string)
-	if !ok {
-		return secret{}, errors.New("can't read port'")
+	if port, exists := secretData["host"]; exists {
+		Port, ok := port.(string)
+		if !ok {
+			return connParameters{}, errors.New("can't read host")
+		}
+		params.Port = Port
+	} else {
+		return connParameters{}, errors.New("port not found")
 	}
-	return secret{
-		CA:   CaCert,
-		Cert: ClientCert,
-		Key:  ClientKey,
-		Host: Host,
-		Port: Port,
-	}, nil
+	return params, nil
 }
 
 func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Response, error) {
-	secret, err := PrepareConnectionParameters(vars)
+	params, err := PrepareConnectionParameters(vars)
 	if err != nil {
 		return nil, nil, err
 	}
 	machineID := vars["machineID"]
 	opts := &connectionArgs{
-		Host:      secret.Host,
-		Port:      secret.Port,
+		Host:      params.Host,
+		Port:      params.Port,
 		MachineID: machineID,
 		Name:      vars["name"],
 		Cluster:   vars["cluster"],
 	}
-	cfg, err := tls.CreateTLSConfig([]byte(secret.Cert), []byte(secret.Key), []byte(secret.CA))
+	if params.CA == "" && params.Cert == "" && params.Key == "" {
+		opts.Scheme = "http"
+	} else {
+		opts.Scheme = "https"
+	}
+	cfg, err := tls.CreateTLSConfig([]byte(params.Cert), []byte(params.Key), []byte(params.CA))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -125,10 +145,11 @@ func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Respon
 	}
 	return podConn, Response, nil
 }
+
 func attachRequest(args *connectionArgs, opts *attachOptions) (*http.Request, error) {
 	//create empty url to be populated
 	u := &url.URL{}
-	u.Scheme = "https"
+	u.Scheme = args.Scheme
 	u.Host = args.Host + ":" + args.Port
 	switch u.Scheme {
 	case "https":
