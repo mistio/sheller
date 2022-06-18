@@ -126,11 +126,7 @@ func attachRequest(opts *attachOptions) (*http.Request, error) {
 	}
 
 	u.Path = fmt.Sprintf("/containers/%s/attach/ws", opts.MachineID)
-<<<<<<< HEAD
 	u.RawQuery = "logs=1&stdin=1&stdout=1&stderr=1&stream=1"
-=======
-	u.RawQuery = "logs=1&stdin=1&stdout=1"
->>>>>>> a489da3967ea3d14b651e313d30b7a9bc5fc3aca
 	// todo: enable customized options
 
 	return &http.Request{
