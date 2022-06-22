@@ -53,7 +53,7 @@ var (
 	upgrader   websocket.Upgrader
 )
 
-func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
+func containerToClient(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
 	b := bytes.Buffer{}
@@ -178,7 +178,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	defer clientConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
-	go containerToClientLXD(ctx, cancel, clientConn, websocketStream, &wg)
+	go containerToClient(ctx, cancel, clientConn, websocketStream, &wg)
 	go clientToContainerLXD(ctx, cancel, clientConn, websocketStream, controlConn, &wg)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, websocketStream, &wg)
