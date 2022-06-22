@@ -28,6 +28,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sheller/docker"
 	sheller "sheller/lib"
 	"sheller/lxd"
 	"sheller/machine"
@@ -53,6 +54,50 @@ var (
 	upgrader   websocket.Upgrader
 )
 
+func clientToContainerDocker(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer cancel()
+	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	clientConn.SetPongHandler(func(string) error { clientConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	containerConn.SetReadDeadline(time.Now().Add(*pongTimeout))
+	containerConn.SetPongHandler(func(string) error { containerConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	for {
+		r, err := sheller.GetNextReader(ctx, clientConn)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		if r == nil {
+			return
+		}
+		dataTypeBuf := make([]byte, 1)
+		_, err = r.Read(dataTypeBuf)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		switch dataTypeBuf[0] {
+		case 0:
+			keystroke := make([]byte, 1)
+			dataLength, err := r.Read(keystroke)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			if dataLength == -1 {
+				log.Println("failed to get the correct number of bytes read, ignoring message")
+				continue
+			}
+			err = containerConn.WriteMessage(websocket.BinaryMessage, keystroke)
+			if err != nil {
+				log.Printf("failed to write to tty: %s", err)
+			}
+		case 1:
+			continue
+		}
+	}
+}
+
 func containerToClient(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
@@ -76,13 +121,55 @@ func containerToClient(ctx context.Context, cancel context.CancelFunc, clientCon
 			log.Printf("Reading from websocket: %v", err)
 			return
 		}
-		if err != nil {
-			log.Println(err)
-		}
 		clientConn.WriteMessage(websocket.BinaryMessage, b.Bytes())
 		b.Reset()
 	}
 }
+
+func handleDocker(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	name := vars["name"]
+	cluster := vars["cluster"]
+	machineID := vars["machineID"]
+	host := vars["host"]
+	port := vars["port"]
+	encrypted_msg := vars["encrypted_msg"]
+	mac := vars["mac"]
+
+	// Create a new HMAC by defining the hash type and the key (as byte array)
+	h := hmac.New(sha256.New, []byte(os.Getenv("SIGN_KEY")))
+
+	// Write Data to it
+	h.Write([]byte(name + "," + cluster + "," + machineID + "," + host + "," + port + "," + vars["expiry"] + "," + encrypted_msg))
+
+	// Get result and encode as hexadecimal string
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != mac {
+		log.Println("HMAC mismatch")
+		return
+	}
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print(err)
+	}
+	containerConn, _, err := docker.EstablishAttachIOWebsocket(vars)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	defer containerConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	go containerToClient(ctx, cancel, clientConn, containerConn, &wg)
+	go clientToContainerDocker(ctx, cancel, clientConn, containerConn, &wg)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, containerConn, &wg)
+	wg.Wait()
+}
+
 func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, ControlConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
@@ -481,6 +568,7 @@ func main() {
 
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
+	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
 	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
