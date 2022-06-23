@@ -24,6 +24,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -52,6 +53,39 @@ var (
 	pingPeriod = (*pongTimeout * 9) / 10
 	upgrader   websocket.Upgrader
 )
+
+func init() {
+	_, secretExists := os.LookupEnv("INTERNAL_KEYS_SECRET")
+	_, signKeyExists := os.LookupEnv("INTERNAL_KEYS_SIGN")
+	if secretExists && signKeyExists {
+		return
+	} else {
+		INTERNAL_KEYS_SECRET_file, err := os.Open("secrets/secret.txt")
+		if err != nil {
+			log.Fatal(err)
+		}
+		INTERNAL_KEYS_SIGN_file, err := os.Open("secrets/sign.txt")
+		if err != nil {
+			log.Fatal(err)
+		}
+		secretString, err := ioutil.ReadAll(INTERNAL_KEYS_SECRET_file)
+		if err != nil {
+			log.Fatal(err)
+		}
+		signString, err := ioutil.ReadAll(INTERNAL_KEYS_SIGN_file)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = os.Setenv("INTERNAL_KEYS_SECRET", string(secretString))
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = os.Setenv("INTERNAL_KEYS_SIGN", string(signString))
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+}
 
 func containerToClientLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
