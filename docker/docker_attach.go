@@ -44,8 +44,8 @@ type attachOptions struct {
 	stderr bool
 }
 
-var attachConnArguments attachConnArgs
-var TLSConfig *tls.Config
+var attachConnArguments *attachConnArgs
+var tlsConfig *tls.Config
 
 func prepareAttachConnectionParameters(vars map[string]string) (attachConnParameters, error) {
 	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
@@ -153,7 +153,7 @@ func EstablishAttachIOWebsocket(vars map[string]string) (*websocket.Conn, *http.
 		return nil, nil, err
 	}
 	machineID := vars["machineID"]
-	attachConnArguments := &attachConnArgs{
+	attachConnArguments = &attachConnArgs{
 		Host:      params.Host,
 		Port:      params.Port,
 		MachineID: machineID,
@@ -168,11 +168,11 @@ func EstablishAttachIOWebsocket(vars map[string]string) (*websocket.Conn, *http.
 		attachConnArguments.Scheme = "http"
 	} else {
 		attachConnArguments.Scheme = "https"
-		TLSConfig, err := shellerTLSUtil.CreateTLSConfig([]byte(params.Cert), []byte(params.Key), []byte(params.CA))
+		tlsConfig, err = shellerTLSUtil.CreateTLSConfig([]byte(params.Cert), []byte(params.Key), []byte(params.CA))
 		if err != nil {
 			return nil, nil, err
 		}
-		dialer.TLSClientConfig = TLSConfig
+		dialer.TLSClientConfig = tlsConfig
 	}
 	req, err := attachRequest(attachConnArguments, &attachOptions{
 		logs:   true,
@@ -206,10 +206,10 @@ func ResizeAttachTerminal(size machine.TerminalSize) error {
 		return err
 	}
 	client := http.DefaultClient
-	if TLSConfig != nil {
+	if tlsConfig != nil {
 		client = &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: TLSConfig,
+				TLSClientConfig: tlsConfig,
 			},
 		}
 	}
