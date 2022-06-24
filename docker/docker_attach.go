@@ -1,13 +1,17 @@
 package docker
 
 import (
+	"bytes"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"sheller/machine"
 	conceal "sheller/util/conceal"
 	"sheller/util/secret/vault"
-	"sheller/util/tls"
+	shellerTLSUtil "sheller/util/tls"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +43,9 @@ type attachOptions struct {
 	stdout bool
 	stderr bool
 }
+
+var attachConnArguments attachConnArgs
+var TLSConfig *tls.Config
 
 func prepareAttachConnectionParameters(vars map[string]string) (attachConnParameters, error) {
 	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
@@ -146,7 +153,7 @@ func EstablishAttachIOWebsocket(vars map[string]string) (*websocket.Conn, *http.
 		return nil, nil, err
 	}
 	machineID := vars["machineID"]
-	opts := &attachConnArgs{
+	attachConnArguments := &attachConnArgs{
 		Host:      params.Host,
 		Port:      params.Port,
 		MachineID: machineID,
@@ -158,16 +165,16 @@ func EstablishAttachIOWebsocket(vars map[string]string) (*websocket.Conn, *http.
 		HandshakeTimeout: 2 * time.Second,
 	}
 	if params.CA == "" && params.Cert == "" && params.Key == "" {
-		opts.Scheme = "http"
+		attachConnArguments.Scheme = "http"
 	} else {
-		opts.Scheme = "https"
-		cfg, err := tls.CreateTLSConfig([]byte(params.Cert), []byte(params.Key), []byte(params.CA))
+		attachConnArguments.Scheme = "https"
+		TLSConfig, err := shellerTLSUtil.CreateTLSConfig([]byte(params.Cert), []byte(params.Key), []byte(params.CA))
 		if err != nil {
 			return nil, nil, err
 		}
-		dialer.TLSClientConfig = cfg
+		dialer.TLSClientConfig = TLSConfig
 	}
-	req, err := attachRequest(opts, &attachOptions{
+	req, err := attachRequest(attachConnArguments, &attachOptions{
 		logs:   true,
 		stream: true,
 		stdin:  true,
@@ -182,4 +189,33 @@ func EstablishAttachIOWebsocket(vars map[string]string) (*websocket.Conn, *http.
 		return nil, nil, err
 	}
 	return podConn, Response, nil
+}
+
+func ResizeAttachTerminal(size machine.TerminalSize) error {
+	//create empty url to be populated
+	u := &url.URL{}
+	u.Scheme = attachConnArguments.Scheme
+	u.Host = attachConnArguments.Host + ":" + attachConnArguments.Port
+	u.Path = fmt.Sprintf("/containers/%s/resize", attachConnArguments.MachineID)
+	resizeMessage := struct {
+		H int `json:"h"`
+		W int `json:"w"`
+	}{H: size.Height, W: size.Width}
+	resizeMessageJSON, err := json.Marshal(resizeMessage)
+	if err != nil {
+		return err
+	}
+	client := http.DefaultClient
+	if TLSConfig != nil {
+		client = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: TLSConfig,
+			},
+		}
+	}
+	_, err = client.Post(u.String(), "application/json", bytes.NewBuffer(resizeMessageJSON))
+	if err != nil {
+		return err
+	}
+	return nil
 }

@@ -127,7 +127,18 @@ func clientToContainerDocker(ctx context.Context, cancel context.CancelFunc, cli
 				log.Printf("failed to write to tty: %s", err)
 			}
 		case 1:
-			continue
+			decoder := json.NewDecoder(r)
+			resizeMessage := machine.TerminalSize{}
+			err := decoder.Decode(&resizeMessage)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			err = docker.ResizeAttachTerminal(resizeMessage)
+			if err != nil {
+				log.Println(err)
+				return
+			}
 		}
 	}
 }
