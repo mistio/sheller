@@ -191,7 +191,7 @@ func EstablishAttachIOWebsocket(vars map[string]string) (*websocket.Conn, *http.
 	return podConn, Response, nil
 }
 
-func ResizeAttachTerminal(size machine.TerminalSize) error {
+func ResizeAttachedTerminal(size machine.TerminalSize) error {
 	//create empty url to be populated
 	u := &url.URL{}
 	u.Scheme = attachConnArguments.Scheme

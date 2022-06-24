@@ -134,7 +134,7 @@ func clientToContainerDocker(ctx context.Context, cancel context.CancelFunc, cli
 				log.Println(err)
 				return
 			}
-			err = docker.ResizeAttachTerminal(resizeMessage)
+			err = docker.ResizeAttachedTerminal(resizeMessage)
 			if err != nil {
 				log.Println(err)
 				return
@@ -154,7 +154,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	mac := vars["mac"]
 
 	// Create a new HMAC by defining the hash type and the key (as byte array)
-	h := hmac.New(sha256.New, []byte(os.Getenv("SIGN_KEY")))
+	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
 	h.Write([]byte(name + "," + cluster + "," + machineID + "," + host + "," + port + "," + vars["expiry"] + "," + encrypted_msg))
