@@ -24,6 +24,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -53,6 +54,39 @@ var (
 	pingPeriod = (*pongTimeout * 9) / 10
 	upgrader   websocket.Upgrader
 )
+
+func init() {
+	_, secretExists := os.LookupEnv("INTERNAL_KEYS_SECRET")
+	_, signKeyExists := os.LookupEnv("INTERNAL_KEYS_SIGN")
+	if secretExists && signKeyExists {
+		return
+	} else {
+		INTERNAL_KEYS_SECRET_file, err := os.Open("secrets/secret.txt")
+		if err != nil {
+			log.Fatal(err)
+		}
+		INTERNAL_KEYS_SIGN_file, err := os.Open("secrets/sign.txt")
+		if err != nil {
+			log.Fatal(err)
+		}
+		secretString, err := ioutil.ReadAll(INTERNAL_KEYS_SECRET_file)
+		if err != nil {
+			log.Fatal(err)
+		}
+		signString, err := ioutil.ReadAll(INTERNAL_KEYS_SIGN_file)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = os.Setenv("INTERNAL_KEYS_SECRET", string(secretString))
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = os.Setenv("INTERNAL_KEYS_SIGN", string(signString))
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+}
 
 func clientToContainerDocker(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
@@ -95,34 +129,6 @@ func clientToContainerDocker(ctx context.Context, cancel context.CancelFunc, cli
 		case 1:
 			continue
 		}
-	}
-}
-
-func containerToClient(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer cancel()
-	b := bytes.Buffer{}
-	writer := bufio.NewWriter(&b)
-	for {
-		r, err := sheller.GetNextReader(ctx, containerConn)
-		if err != nil {
-			log.Println(err)
-		}
-		if r == nil {
-			if err := clientConn.WriteControl(websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
-			} else if err != nil {
-				log.Printf("Error sending close message: %v\n", err)
-			}
-			return
-		}
-		if _, err := io.Copy(writer, r); err != nil {
-			log.Printf("Reading from websocket: %v", err)
-			return
-		}
-		clientConn.WriteMessage(websocket.BinaryMessage, b.Bytes())
-		b.Reset()
 	}
 }
 
@@ -222,6 +228,34 @@ func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, client
 				return
 			}
 		}
+	}
+}
+
+func containerToClient(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer cancel()
+	b := bytes.Buffer{}
+	writer := bufio.NewWriter(&b)
+	for {
+		r, err := sheller.GetNextReader(ctx, containerConn)
+		if err != nil {
+			log.Println(err)
+		}
+		if r == nil {
+			if err := clientConn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
+			} else if err != nil {
+				log.Printf("Error sending close message: %v\n", err)
+			}
+			return
+		}
+		if _, err := io.Copy(writer, r); err != nil {
+			log.Printf("Reading from websocket: %v", err)
+			return
+		}
+		clientConn.WriteMessage(websocket.BinaryMessage, b.Bytes())
+		b.Reset()
 	}
 }
 
