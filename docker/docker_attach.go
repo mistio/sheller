@@ -11,7 +11,6 @@ import (
 	"sheller/machine"
 	conceal "sheller/util/conceal"
 	"sheller/util/secret/vault"
-	shellerTLSUtil "sheller/util/tls"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type attachConnParameters struct {
+type AttachConnParameters struct {
 	CA   string
 	Cert string
 	Key  string
@@ -27,7 +26,7 @@ type attachConnParameters struct {
 	Port string
 }
 
-type attachConnArgs struct {
+type AttachConnArgs struct {
 	Scheme    string
 	Host      string
 	Port      string
@@ -44,13 +43,10 @@ type attachOptions struct {
 	stderr bool
 }
 
-var attachConnArguments attachConnArgs
-var TLSConfig *tls.Config
-
-func prepareAttachConnectionParameters(vars map[string]string) (attachConnParameters, error) {
+func PrepareAttachConnectionParameters(vars map[string]string) (AttachConnParameters, error) {
 	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
 	if err != nil {
-		return attachConnParameters{}, err
+		return AttachConnParameters{}, err
 	}
 	plaintextParts := strings.SplitN(decryptedMessage, ",", -1)
 	token := vault.Token(plaintextParts[0])
@@ -59,57 +55,57 @@ func prepareAttachConnectionParameters(vars map[string]string) (attachConnParame
 	key_path := vault.SecretPath(plaintextParts[3])
 	expiry, err := strconv.ParseInt(vars["expiry"], 10, 64)
 	if err != nil {
-		return attachConnParameters{}, err
+		return AttachConnParameters{}, err
 	}
 	secretPath := vault_addr + "/v1/" + vault_secret_engine_path + "/data/" + key_path
 	secretData, err := vault.GetSecret(token, secretPath, expiry)
 	if err != nil {
-		return attachConnParameters{}, err
+		return AttachConnParameters{}, err
 	}
-	params := attachConnParameters{}
+	params := AttachConnParameters{}
 	if CA, exists := secretData["ca_cert_file"]; exists {
 		CaCert, ok := CA.(string)
 		if !ok {
-			return attachConnParameters{}, errors.New("can't read ca certificate")
+			return AttachConnParameters{}, errors.New("can't read ca certificate")
 		}
 		params.CA = CaCert
 	}
 	if cert, exists := secretData["cert_file"]; exists {
 		ClientCert, ok := cert.(string)
 		if !ok {
-			return attachConnParameters{}, errors.New("can't read ca certificate")
+			return AttachConnParameters{}, errors.New("can't read ca certificate")
 		}
 		params.Cert = ClientCert
 	}
 	if key, exists := secretData["key_file"]; exists {
 		ClientKey, ok := key.(string)
 		if !ok {
-			return attachConnParameters{}, errors.New("can't read ca certificate")
+			return AttachConnParameters{}, errors.New("can't read ca certificate")
 		}
 		params.Key = ClientKey
 	}
 	if host, exists := secretData["host"]; exists {
 		Host, ok := host.(string)
 		if !ok {
-			return attachConnParameters{}, errors.New("can't read host")
+			return AttachConnParameters{}, errors.New("can't read host")
 		}
 		params.Host = Host
 	} else {
-		return attachConnParameters{}, errors.New("host not found")
+		return AttachConnParameters{}, errors.New("host not found")
 	}
 	if port, exists := secretData["port"]; exists {
 		Port, ok := port.(string)
 		if !ok {
-			return attachConnParameters{}, errors.New("can't read port")
+			return AttachConnParameters{}, errors.New("can't read port")
 		}
 		params.Port = Port
 	} else {
-		return attachConnParameters{}, errors.New("port not found")
+		return AttachConnParameters{}, errors.New("port not found")
 	}
 	return params, nil
 }
 
-func attachRequest(args *attachConnArgs, opts *attachOptions) (*http.Request, error) {
+func attachRequest(args *AttachConnArgs, opts *attachOptions) (*http.Request, error) {
 	//create empty url to be populated
 	u := &url.URL{}
 	u.Scheme = args.Scheme
@@ -147,34 +143,13 @@ func attachRequest(args *attachConnArgs, opts *attachOptions) (*http.Request, er
 	}, nil
 }
 
-func EstablishAttachIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Response, error) {
-	params, err := prepareAttachConnectionParameters(vars)
-	if err != nil {
-		return nil, nil, err
-	}
-	machineID := vars["machineID"]
-	attachConnArguments := &attachConnArgs{
-		Host:      params.Host,
-		Port:      params.Port,
-		MachineID: machineID,
-		Name:      vars["name"],
-		Cluster:   vars["cluster"],
-	}
+func EstablishAttachIOWebsocket(params *AttachConnParameters, args *AttachConnArgs, tlsConfig *tls.Config) (*websocket.Conn, *http.Response, error) {
 	dialer := &websocket.Dialer{
 		Proxy:            http.ProxyFromEnvironment,
 		HandshakeTimeout: 2 * time.Second,
+		TLSClientConfig:  tlsConfig,
 	}
-	if params.CA == "" && params.Cert == "" && params.Key == "" {
-		attachConnArguments.Scheme = "http"
-	} else {
-		attachConnArguments.Scheme = "https"
-		TLSConfig, err := shellerTLSUtil.CreateTLSConfig([]byte(params.Cert), []byte(params.Key), []byte(params.CA))
-		if err != nil {
-			return nil, nil, err
-		}
-		dialer.TLSClientConfig = TLSConfig
-	}
-	req, err := attachRequest(attachConnArguments, &attachOptions{
+	req, err := attachRequest(args, &attachOptions{
 		logs:   true,
 		stream: true,
 		stdin:  true,
@@ -191,12 +166,7 @@ func EstablishAttachIOWebsocket(vars map[string]string) (*websocket.Conn, *http.
 	return podConn, Response, nil
 }
 
-func ResizeAttachTerminal(size machine.TerminalSize) error {
-	//create empty url to be populated
-	u := &url.URL{}
-	u.Scheme = attachConnArguments.Scheme
-	u.Host = attachConnArguments.Host + ":" + attachConnArguments.Port
-	u.Path = fmt.Sprintf("/containers/%s/resize", attachConnArguments.MachineID)
+func ResizeAttachedTerminal(client *http.Client, terminalResizeURI string, size machine.TerminalSize) error {
 	resizeMessage := struct {
 		H int `json:"h"`
 		W int `json:"w"`
@@ -205,15 +175,7 @@ func ResizeAttachTerminal(size machine.TerminalSize) error {
 	if err != nil {
 		return err
 	}
-	client := http.DefaultClient
-	if TLSConfig != nil {
-		client = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: TLSConfig,
-			},
-		}
-	}
-	_, err = client.Post(u.String(), "application/json", bytes.NewBuffer(resizeMessageJSON))
+	_, err = client.Post(terminalResizeURI, "application/json", bytes.NewBuffer(resizeMessageJSON))
 	if err != nil {
 		return err
 	}
