@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -34,6 +35,7 @@ import (
 	"sheller/lxd"
 	"sheller/machine"
 	"sheller/util/cancelable"
+	shellerTLSUtil "sheller/util/tls"
 	"strconv"
 	"sync"
 	"time"
@@ -88,7 +90,8 @@ func init() {
 	}
 }
 
-func clientToContainerDocker(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
+func clientToContainerDocker(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, client *http.Client, terminalResizeURI string, wg *sync.WaitGroup) {
+
 	defer wg.Done()
 	defer cancel()
 	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
@@ -134,7 +137,7 @@ func clientToContainerDocker(ctx context.Context, cancel context.CancelFunc, cli
 				log.Println(err)
 				return
 			}
-			err = docker.ResizeAttachTerminal(resizeMessage)
+			err = docker.ResizeAttachedTerminal(client, terminalResizeURI, resizeMessage)
 			if err != nil {
 				log.Println(err)
 				return
@@ -154,7 +157,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	mac := vars["mac"]
 
 	// Create a new HMAC by defining the hash type and the key (as byte array)
-	h := hmac.New(sha256.New, []byte(os.Getenv("SIGN_KEY")))
+	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
 	h.Write([]byte(name + "," + cluster + "," + machineID + "," + host + "," + port + "," + vars["expiry"] + "," + encrypted_msg))
@@ -172,16 +175,54 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Print(err)
 	}
-	containerConn, _, err := docker.EstablishAttachIOWebsocket(vars)
+	attachConnParameters, err := docker.PrepareAttachConnectionParameters(vars)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	attachConnArguments := &docker.AttachConnArgs{
+		Host:      attachConnParameters.Host,
+		Port:      attachConnParameters.Port,
+		MachineID: machineID,
+		Name:      vars["name"],
+		Cluster:   vars["cluster"],
+	}
+	tlsConfig := &tls.Config{}
+	if attachConnParameters.Cert == "" && attachConnParameters.Key == "" {
+		attachConnArguments.Scheme = "http"
+	} else {
+		attachConnArguments.Scheme = "https"
+		tlsConfig, err = shellerTLSUtil.CreateTLSConfig([]byte(attachConnParameters.Cert), []byte(attachConnParameters.Key), []byte(attachConnParameters.CA))
+		if err != nil {
+			log.Println(err)
+			return
+		}
+	}
+	containerConn, _, err := docker.EstablishAttachIOWebsocket(&attachConnParameters, attachConnArguments, tlsConfig)
 	if err != nil {
 		log.Print(err)
 		return
 	}
+	client := http.DefaultClient
+	if tlsConfig != nil {
+		client = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: tlsConfig,
+			},
+		}
+	}
+	TerminalResizeURI := fmt.Sprintf(
+		"%s://%s:%s/containers/%s/resize",
+		attachConnArguments.Scheme,
+		attachConnArguments.Host,
+		attachConnArguments.Port,
+		attachConnArguments.MachineID)
+
 	defer containerConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
 	go containerToClient(ctx, cancel, clientConn, containerConn, &wg)
-	go clientToContainerDocker(ctx, cancel, clientConn, containerConn, &wg)
+	go clientToContainerDocker(ctx, cancel, clientConn, containerConn, client, TerminalResizeURI, &wg)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, containerConn, &wg)
 	wg.Wait()
