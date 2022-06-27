@@ -173,15 +173,14 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	vars := mux.Vars(r)
-	name := vars["name"]
+	pod := vars["pod"]
 	cluster := vars["cluster"]
-	user := vars["user"]
 
 	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(name + "," + cluster + "," + user + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
+	h.Write([]byte(pod + "," + cluster + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -775,7 +774,7 @@ func main() {
 
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
-	m.HandleFunc("/k8s-exec/{name}/{cluster}/{user}/{expiry}/{encrypted_msg}/{mac}", handleKubernetes)
+	m.HandleFunc("/k8s-exec/{pod}/{cluster}/{expiry}/{encrypted_msg}/{mac}", handleKubernetes)
 	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
 	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleSSH)
