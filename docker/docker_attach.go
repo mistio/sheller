@@ -73,14 +73,14 @@ func PrepareAttachConnectionParameters(vars map[string]string) (AttachConnParame
 	if cert, exists := secretData["cert_file"]; exists {
 		ClientCert, ok := cert.(string)
 		if !ok {
-			return AttachConnParameters{}, errors.New("can't read ca certificate")
+			return AttachConnParameters{}, errors.New("can't read client certificate")
 		}
 		params.Cert = ClientCert
 	}
 	if key, exists := secretData["key_file"]; exists {
 		ClientKey, ok := key.(string)
 		if !ok {
-			return AttachConnParameters{}, errors.New("can't read ca certificate")
+			return AttachConnParameters{}, errors.New("can't read key")
 		}
 		params.Key = ClientKey
 	}
