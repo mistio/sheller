@@ -154,7 +154,7 @@ func PodToClient(ctx context.Context, cancel context.CancelFunc, clientConn *web
 			return
 		}
 
-		buf := make([]byte, 1024, 10*1024)
+		buf := make([]byte, 1024, 32*1024)
 		readBytes, err := r.Read(buf)
 		if err != nil {
 			log.Println(err)
@@ -163,7 +163,7 @@ func PodToClient(ctx context.Context, cancel context.CancelFunc, clientConn *web
 			switch buf[0] {
 			case 1, 2:
 				buf[0] = 0
-				clientConn.WriteMessage(websocket.BinaryMessage, buf)
+				clientConn.WriteMessage(websocket.BinaryMessage, buf[:readBytes])
 			}
 		}
 	}
