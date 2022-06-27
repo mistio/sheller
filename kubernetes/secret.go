@@ -21,27 +21,27 @@ func unmarshalSecret(d vault.Secret) (Secret, string, error) {
 	s := Secret{}
 	_, hasCA := d["ca_cert_file"]
 	if hasCA {
-		CAData, ok := d["ca_cert_file"].([]byte)
+		CAData, ok := d["ca_cert_file"].(string)
 		if !ok {
 			return Secret{}, "", errors.New("can't read ca certificate")
 		}
-		s.CAData = CAData
+		s.CAData = []byte(CAData)
 	}
 	_, hascert := d["cert_file"]
 	if hascert {
-		CertData, ok := d["cert_file"].([]byte)
+		CertData, ok := d["cert_file"].(string)
 		if !ok {
 			return Secret{}, "", errors.New("can't read client certificate")
 		}
-		s.CertData = CertData
+		s.CertData = []byte(CertData)
 	}
 	_, haskey := d["key_file"]
 	if haskey {
-		KeyData, ok := d["key_file"].([]byte)
+		KeyData, ok := d["key_file"].(string)
 		if !ok {
 			return Secret{}, "", errors.New("can't read key")
 		}
-		s.KeyData = KeyData
+		s.KeyData = []byte(KeyData)
 	}
 	_, hasBearerToken := d["token"]
 	if hasBearerToken {
