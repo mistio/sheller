@@ -31,11 +31,10 @@ var kubeProtocols = []string{
 }
 
 func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Response, error) {
-	pod := vars["pod"]
 	opts := &execConfig{
 		Namespace: "default",
-		Pod:       pod, // pod name not the same as pod if more than one pod
-		Container: pod,
+		Pod:       vars["pod"], // pod name not the same as pod if more than one pod
+		Container: vars["container"],
 		Command:   []string{"/bin/bash"},
 		Stdin:     true,
 		TTY:       true,
