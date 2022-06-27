@@ -109,15 +109,19 @@ func clientToPod(ctx context.Context, cancel context.CancelFunc, clientConn *web
 		if r == nil {
 			return
 		}
-		dataTypeBuf := make([]byte, 100)
+		dataTypeBuf := make([]byte, 1)
 		_, err = r.Read(dataTypeBuf)
 		if err != nil {
 			log.Println(err)
 		}
 		switch dataTypeBuf[0] {
 		case 0:
-			data := dataTypeBuf[1:]
-			dataLength := len(data)
+			data := make([]byte, 1)
+			dataLength, err := r.Read(data)
+			if err != nil {
+				log.Println(err)
+				return
+			}
 			if dataLength == -1 {
 				log.Println("failed to get the correct number of bytes read, ignoring message")
 				continue
@@ -125,7 +129,7 @@ func clientToPod(ctx context.Context, cancel context.CancelFunc, clientConn *web
 			if bytes.Contains(data, []byte{newline}) {
 				data = append(data, []byte{carriageReturn, newline}...)
 			}
-			err := containerConn.WriteMessage(websocket.BinaryMessage, data)
+			err = containerConn.WriteMessage(websocket.BinaryMessage, data)
 			if err != nil {
 				log.Printf("failed to write %v bytes to tty: %s", len(data), err)
 			}
@@ -163,7 +167,7 @@ func PodToClient(ctx context.Context, cancel context.CancelFunc, clientConn *web
 			switch buf[0] {
 			case 1, 2:
 				buf[0] = 0
-				clientConn.WriteMessage(websocket.BinaryMessage, buf[:readBytes])
+				clientConn.WriteMessage(websocket.BinaryMessage, buf[1:readBytes])
 			}
 		}
 	}
@@ -192,19 +196,21 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fmt.Print(err)
 	}
-	podConn, Response, err := kubernetes.EstablishIOWebsocket(vars)
+	podConn, _, err := kubernetes.EstablishIOWebsocket(vars)
 	if err != nil {
-		body, err := io.ReadAll(Response.Body)
-		bodyString := string(body)
-		log.Print(bodyString)
+		/*
+			body, err := io.ReadAll(Response.Body)
+			bodyString := string(body)
+			log.Print(bodyString)
+		*/
 		log.Println(err)
 		return
 	}
 	defer podConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
-	go PodToClient(ctx, cancel, clientConn, podConn, &wg)
 	go clientToPod(ctx, cancel, clientConn, podConn, &wg)
+	go PodToClient(ctx, cancel, clientConn, podConn, &wg)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, podConn, &wg)
 	wg.Wait()

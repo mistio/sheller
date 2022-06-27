@@ -31,11 +31,11 @@ var kubeProtocols = []string{
 }
 
 func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Response, error) {
-	name := vars["name"]
+	pod := vars["pod"]
 	opts := &execConfig{
 		Namespace: "default",
-		Pod:       name, // pod name not the same as pod if more than one pod
-		Container: name,
+		Pod:       pod, // pod name not the same as pod if more than one pod
+		Container: pod,
 		Command:   []string{"/bin/bash"},
 		Stdin:     true,
 		TTY:       true,
@@ -115,12 +115,15 @@ func execRequest(config *rest.Config, opts *execConfig) (*http.Request, error) {
 		rawQuery += "&stdin=true"
 	}
 	u.RawQuery = rawQuery
-	return &http.Request{
-		Header: http.Header{
-			"authorization": {"Bearer " + config.BearerToken},
-		},
+	Request := &http.Request{
 		Host:   u.Host,
 		Method: http.MethodGet,
 		URL:    u,
-	}, nil
+	}
+	if config.BearerToken != "" {
+		Request.Header = http.Header{
+			"authorization": {"Bearer " + config.BearerToken},
+		}
+	}
+	return Request, nil
 }
