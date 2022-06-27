@@ -126,6 +126,7 @@ func clientToPod(ctx context.Context, cancel context.CancelFunc, clientConn *web
 				log.Println("failed to get the correct number of bytes read, ignoring message")
 				continue
 			}
+			data = append([]byte{0}, data...)
 			if bytes.Contains(data, []byte{newline}) {
 				data = append(data, []byte{carriageReturn, newline}...)
 			}
