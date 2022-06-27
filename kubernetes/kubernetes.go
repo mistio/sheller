@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
 	"strconv"
@@ -31,11 +32,15 @@ var kubeProtocols = []string{
 }
 
 func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Response, error) {
+	command := strings.Fields(os.Getenv("COMMAND"))
+	if len(command) == 0 {
+		command = []string{"/bin/bash"}
+	}
 	opts := &execConfig{
 		Namespace: "default",
 		Pod:       vars["pod"], // pod name not the same as pod if more than one pod
 		Container: vars["container"],
-		Command:   []string{"/bin/bash"},
+		Command:   command,
 		Stdin:     true,
 		TTY:       true,
 	}
