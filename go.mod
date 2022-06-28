@@ -11,6 +11,28 @@ require (
 )
 
 require (
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/go-logr/logr v1.2.0 // indirect
+	github.com/gogo/protobuf v1.3.2 // indirect
+	github.com/google/gofuzz v1.1.0 // indirect
+	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/modern-go/reflect2 v1.0.2 // indirect
+	golang.org/x/oauth2 v0.0.0-20211104180415-d3ed0bb246c8 // indirect
+	golang.org/x/text v0.3.7 // indirect
+	golang.org/x/time v0.0.0-20220210224613-90d013bbcef8 // indirect
+	google.golang.org/appengine v1.6.7 // indirect
+	gopkg.in/inf.v0 v0.9.1 // indirect
+	gopkg.in/yaml.v2 v2.4.0 // indirect
+	k8s.io/apimachinery v0.24.2 // indirect
+	k8s.io/klog/v2 v2.60.1 // indirect
+	k8s.io/utils v0.0.0-20220210201930-3a6ce19ff2f9 // indirect
+	sigs.k8s.io/json v0.0.0-20211208200746-9f7c6b3444d2 // indirect
+	sigs.k8s.io/structured-merge-diff/v4 v4.2.1 // indirect
+	sigs.k8s.io/yaml v1.2.0 // indirect
+)
+
+require (
 	github.com/flosch/pongo2 v0.0.0-20200913210552-0d938eb266f3 // indirect
 	github.com/go-macaroon-bakery/macaroonpb v1.0.0 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
@@ -34,4 +56,5 @@ require (
 	gopkg.in/inconshreveable/log15.v2 v2.0.0-20200109203555-b30bc20e4fd1 // indirect
 	gopkg.in/macaroon-bakery.v2 v2.3.0 // indirect
 	gopkg.in/macaroon.v2 v2.1.0 // indirect
+	k8s.io/client-go v0.24.2
 )
