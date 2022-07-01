@@ -39,11 +39,17 @@ import (
 	shellerTLSUtil "sheller/util/tls"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/elliotchance/sshtunnel"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
+	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream" // Main package
+
+	// amqp 1.0 package to encode messages
+	// messages interface package, you may not need to import it directly
 	"golang.org/x/crypto/ssh"
 )
 
@@ -605,6 +611,77 @@ func hostToClient(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	}
 }
 
+func hostToClientStreamLogger(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader, producer *stream.Producer) {
+	defer wg.Done()
+	defer cancel()
+	defer func() {
+		err := producer.Close()
+		if err != nil {
+			log.Println(err)
+		}
+	}()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		b := make([]byte, 32*1024)
+		if n, err := reader.Read(b); err == io.EOF {
+			if err := conn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
+			} else if err != nil {
+				log.Printf("Error sending close message: %v", err)
+			}
+		} else {
+			b = b[:n]
+		}
+		err := producer.Send(amqp.NewMessage(b))
+		if err != nil {
+			log.Println(err)
+			return
+		}
+	}
+}
+
+func JobLogConsumer(w http.ResponseWriter, r *http.Request) {
+	// add ctx
+	vars := mux.Vars(r)
+	job_id := vars["job_id"]
+	env, err := createStreamEnv()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	var counter int32
+	handleMessages := func(consumerContext stream.ConsumerContext, message *amqp.Message) {
+		fmt.Printf("messages consumed: %d \n ", atomic.AddInt32(&counter, 1))
+		fmt.Println(message.Value)
+		// TODO:
+		// write back to a websocket connection that
+		// the client will use to read the streaming logs
+	}
+	atomic.StoreInt32(&counter, 0)
+	consumerNext, err := env.NewConsumer(job_id,
+		handleMessages,
+		stream.NewConsumerOptions().
+			SetConsumerName(job_id+"consumer"). // set a consumerOffsetNumber name
+			SetOffset(stream.OffsetSpecification{}.First()))
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	err = consumerNext.Close()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	err = env.DeleteStream(job_id)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+}
+
 func handleSSH(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -614,6 +691,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	host := vars["host"]
 	port := vars["port"]
 	mac := vars["mac"]
+	job_id := vars["job_id"]
 
 	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
@@ -682,14 +760,34 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer conn.Close()
-
 	var wg sync.WaitGroup
 	wg.Add(3)
-
 	go clientToHostSSH(ctx, cancel, conn, &wg, remoteStdin, session)
-	go hostToClient(ctx, cancel, conn, &wg, remoteStdout)
+	if job_id == "" {
+		go hostToClient(ctx, cancel, conn, &wg, remoteStdout)
+	} else {
+		env, err := createStreamEnv()
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		err = env.DeclareStream(job_id,
+			&stream.StreamOptions{
+				MaxLengthBytes: stream.ByteCapacity{}.GB(2),
+			},
+		)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		producer, err := env.NewProducer(job_id, nil)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		go hostToClientStreamLogger(ctx, cancel, conn, &wg, remoteStdout, producer)
+	}
 	go pingWebsocket(ctx, cancel, conn, &wg)
-
 	wg.Wait()
 	log.Println("SSH connection finished")
 }
@@ -763,6 +861,19 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	log.Println("VNC connection finished")
 }
 
+func createStreamEnv() (*stream.Environment, error) {
+	env, err := stream.NewEnvironment(
+		stream.NewEnvironmentOptions().
+			SetHost("localhost").
+			SetPort(5552).
+			SetUser("guest").
+			SetPassword("guest"))
+	if err != nil {
+		return nil, err
+	}
+	return env, nil
+}
+
 func main() {
 	flag.Parse()
 
@@ -774,9 +885,9 @@ func main() {
 			return true
 		},
 	}
-
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
+	m.HandleFunc("job-logs/{job_id}", JobLogConsumer)
 	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{mac}", handleKubernetes)
 	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
 	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
