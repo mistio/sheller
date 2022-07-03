@@ -36,6 +36,7 @@ import (
 	"sheller/lxd"
 	"sheller/machine"
 	"sheller/util/cancelable"
+	"sheller/util/stream"
 	shellerTLSUtil "sheller/util/tls"
 	"strconv"
 	"sync"
@@ -209,12 +210,32 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	}
 	defer podConn.Close()
 	wg := sync.WaitGroup{}
-	wg.Add(4)
-	go clientToPod(ctx, cancel, clientConn, podConn, &wg)
-	go PodToClient(ctx, cancel, clientConn, podConn, &wg)
-	go pingWebsocket(ctx, cancel, clientConn, &wg)
-	go pingWebsocket(ctx, cancel, podConn, &wg)
-	wg.Wait()
+
+	_, job_id_exists := vars["job_id"]
+	if job_id_exists {
+		wg.Add(4)
+		go clientToPod(ctx, cancel, clientConn, podConn, &wg)
+		go PodToClient(ctx, cancel, clientConn, podConn, &wg)
+		go pingWebsocket(ctx, cancel, clientConn, &wg)
+		go pingWebsocket(ctx, cancel, podConn, &wg)
+		wg.Wait()
+	} else {
+		job_id := vars["job_id"]
+		prod, err := stream.CreateStreamProducer(job_id)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		command := vars["command"]
+		buf := []byte(command)
+		if err := podConn.WriteMessage(websocket.BinaryMessage, buf); err != nil {
+			log.Printf("Writing command to websocket: %v", err)
+			return
+		}
+		wg.Add(1)
+		go stream.HostProducerWebsocket(ctx, cancel, &wg, podConn, prod)
+		wg.Wait()
+	}
 }
 
 func clientToContainerDocker(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, client *http.Client, terminalResizeURI string, wg *sync.WaitGroup) {
@@ -460,11 +481,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 		log.Println("HMAC mismatch")
 		return
 	}
-	clientConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println(err)
-		return
-	}
+
 	// Use websocketStream to send commands and read results from
 	// the terminal.
 	// Use controlConn to send control characters to the terminal.
@@ -475,14 +492,39 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	}
 	defer websocketStream.Close()
 	defer controlConn.Close()
-	defer clientConn.Close()
-	wg := sync.WaitGroup{}
-	wg.Add(4)
-	go containerToClient(ctx, cancel, clientConn, websocketStream, &wg)
-	go clientToContainerLXD(ctx, cancel, clientConn, websocketStream, controlConn, &wg)
-	go pingWebsocket(ctx, cancel, clientConn, &wg)
-	go pingWebsocket(ctx, cancel, websocketStream, &wg)
-	wg.Wait()
+	var wg sync.WaitGroup
+	_, job_id_exists := vars["job_id"]
+	if !job_id_exists {
+		clientConn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		defer clientConn.Close()
+		wg.Add(4)
+		go containerToClient(ctx, cancel, clientConn, websocketStream, &wg)
+		go clientToContainerLXD(ctx, cancel, clientConn, websocketStream, controlConn, &wg)
+		go pingWebsocket(ctx, cancel, clientConn, &wg)
+		go pingWebsocket(ctx, cancel, websocketStream, &wg)
+		wg.Wait()
+	} else {
+		job_id := vars["job_id"]
+		prod, err := stream.CreateStreamProducer(job_id)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		command := vars["command"]
+		buf := []byte(command)
+		if err := websocketStream.WriteMessage(websocket.BinaryMessage, buf); err != nil {
+			log.Printf("Writing command to websocket: %v", err)
+			return
+		}
+		wg.Add(1)
+		go stream.HostProducerWebsocket(ctx, cancel, &wg, websocketStream, prod)
+		wg.Wait()
+	}
+
 }
 
 func startSSH(session *ssh.Session) error {
@@ -678,20 +720,39 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 		return
 	}
-
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	defer conn.Close()
 	var wg sync.WaitGroup
-	wg.Add(3)
-	go clientToHostSSH(ctx, cancel, conn, &wg, remoteStdin, session)
-	go hostToClient(ctx, cancel, conn, &wg, remoteStdout)
-	go pingWebsocket(ctx, cancel, conn, &wg)
-	wg.Wait()
+	_, job_id_exists := vars["job_id"]
+	if !job_id_exists {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		defer conn.Close()
+		wg.Add(3)
+		go clientToHostSSH(ctx, cancel, conn, &wg, remoteStdin, session)
+		go hostToClient(ctx, cancel, conn, &wg, remoteStdout)
+		go pingWebsocket(ctx, cancel, conn, &wg)
+		wg.Wait()
+	} else {
+		job_id := vars["job_id"]
+		prod, err := stream.CreateStreamProducer(job_id)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		command := vars["command"]
+		// create a reader
+		buf := []byte(command)
+		reader := bytes.NewReader(buf)
+		if _, err := io.Copy(remoteStdin, reader); err != nil {
+			log.Printf("Reading from websocket: %v", err)
+			return
+		}
+		wg.Add(1)
+		go stream.HostProducer(ctx, cancel, &wg, remoteStdout, prod)
+		wg.Wait()
+	}
 	log.Println("SSH connection finished")
 }
 
@@ -709,7 +770,7 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(proxy + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"] + "," + vars["command"]))
+	h.Write([]byte(proxy + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -777,11 +838,19 @@ func main() {
 	}
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
-	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleKubernetes)
-	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleDocker)
-	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleLXD)
+	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{command}/{mac}", handleKubernetes)
+	m.HandleFunc("/k8s-stream/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleKubernetes)
+
+	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{mac}", handleDocker)
+	m.HandleFunc("/docker-stream/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleDocker)
+
+	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{mac}", handleLXD)
+	m.HandleFunc("/lxd-stream/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleLXD)
+
+	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{mac}", handleSSH)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleSSH)
-	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleVNC)
+
+	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{job_id}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,
 		Handler:        m,

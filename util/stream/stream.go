@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	sheller "sheller/lib"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -31,7 +31,27 @@ func createStreamEnv() (*stream.Environment, error) {
 	return env, nil
 }
 
-func hostToClientProducer(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader, producer *stream.Producer) {
+func CreateStreamProducer(job_id string) (*stream.Producer, error) {
+	env, err := createStreamEnv()
+	if err != nil {
+		return nil, err
+	}
+	err = env.DeclareStream(job_id,
+		&stream.StreamOptions{
+			MaxLengthBytes: stream.ByteCapacity{}.GB(2),
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	producer, err := env.NewProducer(job_id, nil)
+	if err != nil {
+		return nil, err
+	}
+	return producer, nil
+}
+
+func HostProducer(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup, reader io.Reader, producer *stream.Producer) {
 	defer wg.Done()
 	defer cancel()
 	defer func() {
@@ -40,6 +60,7 @@ func hostToClientProducer(ctx context.Context, cancel context.CancelFunc, conn *
 			log.Println(err)
 		}
 	}()
+	// for testing purposes
 	go jobStreamConsumer()
 	for {
 		if ctx.Err() != nil {
@@ -47,16 +68,58 @@ func hostToClientProducer(ctx context.Context, cancel context.CancelFunc, conn *
 		}
 		b := make([]byte, 32*1024)
 		if n, err := reader.Read(b); err == io.EOF {
-			if err := conn.WriteControl(websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
-			} else if err != nil {
-				log.Printf("Error sending close message: %v", err)
-			}
+			log.Println("received EOF from host, closing producer...")
+			return
+		} else if err != nil {
+			log.Println(err)
 		} else {
 			b = b[:n]
+			return
 		}
 		err := producer.Send(amqp.NewMessage(b))
+		if err != nil {
+			log.Println(err)
+			return
+		}
+	}
+}
+
+func HostProducerWebsocket(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup, conn *websocket.Conn, producer *stream.Producer) {
+	defer wg.Done()
+	defer cancel()
+	defer func() {
+		err := producer.Close()
+		if err != nil {
+			log.Println(err)
+		}
+	}()
+	// for testing purposes
+	go jobStreamConsumer()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		reader, err := sheller.GetNextReader(ctx, conn)
+		if err != nil {
+			log.Println(err)
+		}
+		b := make([]byte, 32*1024)
+		if n, err := reader.Read(b); err == io.EOF {
+			log.Println("received EOF from host, closing producer...")
+			return
+		} else if err != nil {
+			log.Println(err)
+			return
+		} else {
+			if b[0] == 1 || b[0] == 2 {
+				// b[0]=1 is for kubernetes
+				b = b[1:n]
+			} else if b[0] != 0 {
+				b = b[:n]
+				continue
+			}
+		}
+		err = producer.Send(amqp.NewMessage(b))
 		if err != nil {
 			log.Println(err)
 			return
@@ -72,15 +135,12 @@ func jobStreamConsumer() {
 		log.Println(err)
 		return
 	}
-	var counter int32
 	handleMessages := func(consumerContext stream.ConsumerContext, message *amqp.Message) {
-		fmt.Printf("messages consumed: %d \n ", atomic.AddInt32(&counter, 1))
 		fmt.Printf("%s", message.Data)
 		// TODO:
 		// write back to a websocket connection that
 		// the client will use to read the streaming logs
 	}
-	atomic.StoreInt32(&counter, 0)
 	_, err = env.NewConsumer(job_id,
 		handleMessages,
 		stream.NewConsumerOptions().
