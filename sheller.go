@@ -190,7 +190,7 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(pod + "," + container + "," + cluster + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
+	h.Write([]byte(pod + "," + container + "," + cluster + "," + vars["expiry"] + "," + vars["encrypted_msg"] + "," + vars["command"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -287,7 +287,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(name + "," + cluster + "," + machineID + "," + host + "," + port + "," + vars["expiry"] + "," + encrypted_msg))
+	h.Write([]byte(name + "," + cluster + "," + machineID + "," + host + "," + port + "," + vars["expiry"] + "," + encrypted_msg + "," + vars["command"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -452,7 +452,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(name + "," + cluster + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
+	h.Write([]byte(name + "," + cluster + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"] + "," + vars["command"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -623,7 +623,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
+	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"] + "," + vars["command"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -709,7 +709,7 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(proxy + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
+	h.Write([]byte(proxy + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"] + "," + vars["command"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -777,11 +777,11 @@ func main() {
 	}
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
-	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{mac}", handleKubernetes)
-	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
-	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
-	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleSSH)
-	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
+	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleKubernetes)
+	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleDocker)
+	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleLXD)
+	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleSSH)
+	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,
 		Handler:        m,
