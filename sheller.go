@@ -65,19 +65,6 @@ var (
 	carriageReturn = byte(13)
 )
 
-func handleLogsConsumer(w http.ResponseWriter, r *http.Request) {
-	//	ctx, cancel := context.WithCancel(context.Background())
-	//defer cancel()
-	vars := mux.Vars(r)
-	job_id := vars["job_id"]
-	clientConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Print(err)
-	}
-	go stream.JobStreamConsumerWebsocket(job_id, clientConn)
-	return
-}
-
 func init() {
 	_, secretExists := os.LookupEnv("INTERNAL_KEYS_SECRET")
 	_, signKeyExists := os.LookupEnv("INTERNAL_KEYS_SIGN")
@@ -109,6 +96,19 @@ func init() {
 			log.Fatal(err)
 		}
 	}
+}
+
+func handleLogsConsumer(w http.ResponseWriter, r *http.Request) {
+	//	ctx, cancel := context.WithCancel(context.Background())
+	//defer cancel()
+	vars := mux.Vars(r)
+	job_id := vars["job_id"]
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Print(err)
+	}
+	go stream.JobStreamConsumerWebsocket(job_id, clientConn)
+	defer clientConn.Close()
 }
 
 func clientToPod(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
@@ -673,7 +673,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	host := vars["host"]
 	port := vars["port"]
 	mac := vars["mac"]
-
 	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
@@ -734,6 +733,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var wg sync.WaitGroup
+
 	_, job_id_exists := vars["job_id"]
 	if !job_id_exists {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -851,7 +851,7 @@ func main() {
 	}
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
-	m.Handle("/consume-logs/{job-id}", handleLogsConsumer)
+	m.HandleFunc("/consume-logs/{job-id}", handleLogsConsumer)
 
 	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{command}/{mac}", handleKubernetes)
 	m.HandleFunc("/k8s-stream/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleKubernetes)
@@ -863,7 +863,7 @@ func main() {
 	m.HandleFunc("/lxd-stream/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleLXD)
 
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{mac}", handleSSH)
-	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleSSH)
+	m.HandleFunc("/ssh-stream/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleSSH)
 
 	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{job_id}/{mac}", handleVNC)
 	s := &http.Server{
