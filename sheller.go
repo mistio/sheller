@@ -65,6 +65,19 @@ var (
 	carriageReturn = byte(13)
 )
 
+func handleLogsConsumer(w http.ResponseWriter, r *http.Request) {
+	//	ctx, cancel := context.WithCancel(context.Background())
+	//defer cancel()
+	vars := mux.Vars(r)
+	job_id := vars["job_id"]
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Print(err)
+	}
+	go stream.JobStreamConsumerWebsocket(job_id, clientConn)
+	return
+}
+
 func init() {
 	_, secretExists := os.LookupEnv("INTERNAL_KEYS_SECRET")
 	_, signKeyExists := os.LookupEnv("INTERNAL_KEYS_SIGN")
@@ -199,10 +212,6 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 		log.Println("HMAC mismatch")
 		return
 	}
-	clientConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Print(err)
-	}
 	podConn, _, err := kubernetes.EstablishIOWebsocket(vars)
 	if err != nil {
 		log.Println(err)
@@ -213,6 +222,10 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 
 	_, job_id_exists := vars["job_id"]
 	if job_id_exists {
+		clientConn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			fmt.Print(err)
+		}
 		wg.Add(4)
 		go clientToPod(ctx, cancel, clientConn, podConn, &wg)
 		go PodToClient(ctx, cancel, clientConn, podConn, &wg)
@@ -838,6 +851,8 @@ func main() {
 	}
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
+	m.Handle("/consume-logs/{job-id}", handleLogsConsumer)
+
 	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{command}/{mac}", handleKubernetes)
 	m.HandleFunc("/k8s-stream/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleKubernetes)
 

@@ -163,3 +163,41 @@ func jobStreamConsumer() {
 		}
 	*/
 }
+
+func JobStreamConsumerWebsocket(job_id string, conn *websocket.Conn) {
+	env, err := createStreamEnv()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	handleMessages := func(consumerContext stream.ConsumerContext, message *amqp.Message) {
+		for _, b := range message.Data {
+			err := conn.WriteMessage(websocket.BinaryMessage, b)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+		}
+	}
+	_, err = env.NewConsumer(job_id,
+		handleMessages,
+		stream.NewConsumerOptions().
+			SetConsumerName(job_id+"consumer"). // set a consumerOffsetNumber name
+			SetOffset(stream.OffsetSpecification{}.First()))
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	/*
+		err = consumerNext.Close()
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		err = env.DeleteStream(job_id)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+	*/
+}
