@@ -2,20 +2,16 @@ package stream
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"log"
 	sheller "sheller/lib"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 )
-
-var writeTimeout = flag.Duration("write_timeout", 10*time.Second, "Write timeout.")
 
 func createStreamEnv() (*stream.Environment, error) {
 	env, err := stream.NewEnvironment(
@@ -72,9 +68,9 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitG
 			return
 		} else if err != nil {
 			log.Println(err)
+			return
 		} else {
 			b = b[:n]
-			return
 		}
 		err := producer.Send(amqp.NewMessage(b))
 		if err != nil {
@@ -116,6 +112,7 @@ func HostProducerWebsocket(ctx context.Context, cancel context.CancelFunc, wg *s
 				b = b[1:n]
 			} else if b[0] != 0 {
 				b = b[:n]
+			} else {
 				continue
 			}
 		}
