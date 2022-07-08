@@ -114,7 +114,12 @@ func EstablishIOWebsockets(vars map[string]string) (*websocket.Conn, *websocket.
 	}
 	return websocketStream, controlConn, nil
 }
-func ResizeTerminal(controlConn *websocket.Conn, size machine.TerminalSize) error {
+
+type X struct {
+	ControlConn *websocket.Conn
+}
+
+func (x *X) Resize(size machine.TerminalSize) error {
 	msg := api.ContainerExecControl{}
 	msg.Command = "window-resize"
 	msg.Args = make(map[string]string)
@@ -124,7 +129,7 @@ func ResizeTerminal(controlConn *websocket.Conn, size machine.TerminalSize) erro
 	if err != nil {
 		return err
 	}
-	err = controlConn.WriteMessage(websocket.TextMessage, buf)
+	err = x.ControlConn.WriteMessage(websocket.TextMessage, buf)
 	if err != nil {
 		return err
 	}

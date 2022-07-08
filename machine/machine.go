@@ -57,3 +57,12 @@ func GetPrivateKey(vars map[string]string) (ssh.AuthMethod, error) {
 	}
 	return ssh.PublicKeys(priv), nil
 }
+
+type X struct {
+	Session *ssh.Session
+}
+
+func (x *X) Resize(resizeMessage TerminalSize) error {
+	err := x.Session.WindowChange(resizeMessage.Height, resizeMessage.Width)
+	return err
+}

@@ -166,7 +166,12 @@ func EstablishAttachIOWebsocket(params *AttachConnParameters, args *AttachConnAr
 	return podConn, Response, nil
 }
 
-func ResizeAttachedTerminal(client *http.Client, terminalResizeURI string, size machine.TerminalSize) error {
+type X struct {
+	Client            *http.Client
+	TerminalResizeURI string
+}
+
+func (x *X) Resize(size machine.TerminalSize) error {
 	resizeMessage := struct {
 		H int `json:"h"`
 		W int `json:"w"`
@@ -175,7 +180,7 @@ func ResizeAttachedTerminal(client *http.Client, terminalResizeURI string, size 
 	if err != nil {
 		return err
 	}
-	_, err = client.Post(terminalResizeURI, "application/json", bytes.NewBuffer(resizeMessageJSON))
+	_, err = x.Client.Post(x.TerminalResizeURI, "application/json", bytes.NewBuffer(resizeMessageJSON))
 	if err != nil {
 		return err
 	}

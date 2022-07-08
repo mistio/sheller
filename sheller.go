@@ -65,6 +65,21 @@ var (
 	carriageReturn = byte(13)
 )
 
+type Resizer interface {
+	Resize(machine.TerminalSize) error
+}
+
+const (
+	LXD = iota
+	Kubernetes
+	Docker
+)
+
+const (
+	DataMSG = iota
+	ResizeMSG
+)
+
 func init() {
 	_, secretExists := os.LookupEnv("INTERNAL_KEYS_SECRET")
 	_, signKeyExists := os.LookupEnv("INTERNAL_KEYS_SIGN")
@@ -98,6 +113,107 @@ func init() {
 	}
 }
 
+func WriteToClient(ctx context.Context, cancel func(), src *websocket.Conn, dst *websocket.Conn, MachineType int) error {
+	defer cancel()
+	for {
+		r, err := sheller.GetNextReader(ctx, src)
+		if err != nil {
+			log.Println(err)
+		}
+		b := make([]byte, 32*1024)
+		if n, err := r.Read(b); err != nil {
+			return err
+		} else {
+			b = b[:n]
+		}
+		switch MachineType {
+		case Kubernetes:
+			if b[0] == 0 {
+				continue
+			} else {
+				b = b[1:]
+			}
+		}
+		if err := dst.WriteMessage(websocket.BinaryMessage, b); err != nil {
+			log.Println(err)
+			return err
+		}
+	}
+}
+
+func ToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, host *websocket.Conn, wg *sync.WaitGroup, resizer Resizer, MachineType int) {
+	defer wg.Done()
+	defer cancel()
+	// websocket -> server
+	client.SetReadDeadline(time.Now().Add(*pongTimeout))
+	client.SetPongHandler(func(string) error { client.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	host.SetReadDeadline(time.Now().Add(*pongTimeout))
+	host.SetPongHandler(func(string) error { client.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
+	b := bytes.Buffer{}
+	writer := bufio.NewWriter(&b)
+	for {
+		r, err := sheller.GetNextReader(ctx, client)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		if r == nil {
+			return
+		}
+		r = bufio.NewReader(r)
+		messageType := make([]byte, 1)
+		if _, err := r.Read(messageType); err != nil {
+			log.Println(err)
+		}
+		switch messageType[0] {
+		case DataMSG:
+			if _, err := io.Copy(writer, r); err != nil {
+				log.Printf("Reading from websocket: %v", err)
+				return
+			}
+			data := []byte{}
+			if MachineType == Kubernetes {
+				data = append([]byte{0}, b.Bytes()...)
+				if bytes.Contains(data, []byte{newline}) {
+					data = append(data, []byte{carriageReturn, newline}...)
+				}
+			} else {
+				data = b.Bytes()
+			}
+			err = host.WriteMessage(websocket.BinaryMessage, data)
+			if err != nil {
+				log.Printf("failed to write to tty: %s", err)
+			}
+			b.Reset()
+		case ResizeMSG:
+			if resizer != nil {
+				decoder := json.NewDecoder(r)
+				resizeMessage := machine.TerminalSize{}
+				err := decoder.Decode(&resizeMessage)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+				resizer.Resize(resizeMessage)
+			}
+		}
+	}
+}
+func ToClient(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, MachineType int) {
+	defer wg.Done()
+	defer cancel()
+	if err := WriteToClient(ctx, cancel, client, host, MachineType); err == io.EOF {
+		if err := client.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
+		} else if err != nil {
+			log.Printf("Error sending close message: %v", err)
+		}
+	} else if err != nil {
+		log.Printf("Reading from file: %v", err)
+	}
+}
+
 func handleLogsConsumer(w http.ResponseWriter, r *http.Request) {
 	//	ctx, cancel := context.WithCancel(context.Background())
 	//defer cancel()
@@ -109,87 +225,6 @@ func handleLogsConsumer(w http.ResponseWriter, r *http.Request) {
 	}
 	go stream.JobStreamConsumerWebsocket(job_id, clientConn)
 	defer clientConn.Close()
-}
-
-func clientToPod(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer cancel()
-	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
-	clientConn.SetPongHandler(func(string) error { clientConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
-	containerConn.SetReadDeadline(time.Now().Add(*pongTimeout))
-	containerConn.SetPongHandler(func(string) error { containerConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
-	for {
-		r, err := sheller.GetNextReader(ctx, clientConn)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		if r == nil {
-			return
-		}
-		dataTypeBuf := make([]byte, 1)
-		_, err = r.Read(dataTypeBuf)
-		if err != nil {
-			log.Println(err)
-		}
-		switch dataTypeBuf[0] {
-		case 0:
-			data := make([]byte, 1)
-			dataLength, err := r.Read(data)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-			if dataLength == -1 {
-				log.Println("failed to get the correct number of bytes read, ignoring message")
-				continue
-			}
-			data = append([]byte{0}, data...)
-			if bytes.Contains(data, []byte{newline}) {
-				data = append(data, []byte{carriageReturn, newline}...)
-			}
-			err = containerConn.WriteMessage(websocket.BinaryMessage, data)
-			if err != nil {
-				log.Printf("failed to write %v bytes to tty: %s", len(data), err)
-			}
-		case 1:
-			continue
-		}
-	}
-}
-
-func PodToClient(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer cancel()
-	for {
-		r, err := sheller.GetNextReader(ctx, containerConn)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		if r == nil {
-			if err := clientConn.WriteControl(websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
-			} else if err != nil {
-				log.Printf("Error sending close message: %v", err)
-			}
-			return
-		}
-
-		buf := make([]byte, 1024, 32*1024)
-		readBytes, err := r.Read(buf)
-		if err != nil {
-			log.Println(err)
-		}
-		if readBytes > 1 {
-			switch buf[0] {
-			case 1, 2:
-				buf[0] = 0
-				clientConn.WriteMessage(websocket.BinaryMessage, buf[1:readBytes])
-			}
-		}
-	}
 }
 
 func handleKubernetes(w http.ResponseWriter, r *http.Request) {
@@ -220,91 +255,16 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	defer podConn.Close()
 	wg := sync.WaitGroup{}
 
-	_, job_id_exists := vars["job_id"]
-	if job_id_exists {
-		clientConn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			fmt.Print(err)
-		}
-		wg.Add(4)
-		go clientToPod(ctx, cancel, clientConn, podConn, &wg)
-		go PodToClient(ctx, cancel, clientConn, podConn, &wg)
-		go pingWebsocket(ctx, cancel, clientConn, &wg)
-		go pingWebsocket(ctx, cancel, podConn, &wg)
-		wg.Wait()
-	} else {
-		job_id := vars["job_id"]
-		prod, err := stream.CreateStreamProducer(job_id)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		command := vars["command"]
-		buf := []byte(command)
-		if err := podConn.WriteMessage(websocket.BinaryMessage, buf); err != nil {
-			log.Printf("Writing command to websocket: %v", err)
-			return
-		}
-		wg.Add(1)
-		go stream.HostProducerWebsocket(ctx, cancel, &wg, podConn, prod)
-		wg.Wait()
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Print(err)
 	}
-}
-
-func clientToContainerDocker(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, client *http.Client, terminalResizeURI string, wg *sync.WaitGroup) {
-
-	defer wg.Done()
-	defer cancel()
-	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
-	clientConn.SetPongHandler(func(string) error { clientConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
-	containerConn.SetReadDeadline(time.Now().Add(*pongTimeout))
-	containerConn.SetPongHandler(func(string) error { containerConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
-	for {
-		r, err := sheller.GetNextReader(ctx, clientConn)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		if r == nil {
-			return
-		}
-		dataTypeBuf := make([]byte, 1)
-		_, err = r.Read(dataTypeBuf)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		switch dataTypeBuf[0] {
-		case 0:
-			keystroke := make([]byte, 1)
-			dataLength, err := r.Read(keystroke)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-			if dataLength == -1 {
-				log.Println("failed to get the correct number of bytes read, ignoring message")
-				continue
-			}
-			err = containerConn.WriteMessage(websocket.BinaryMessage, keystroke)
-			if err != nil {
-				log.Printf("failed to write to tty: %s", err)
-			}
-		case 1:
-			decoder := json.NewDecoder(r)
-			resizeMessage := machine.TerminalSize{}
-			err := decoder.Decode(&resizeMessage)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-			err = docker.ResizeAttachedTerminal(client, terminalResizeURI, resizeMessage)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-		}
-	}
+	wg.Add(4)
+	go ToHost(ctx, cancel, clientConn, podConn, &wg, nil, Kubernetes)
+	go ToClient(ctx, cancel, clientConn, &wg, podConn, Kubernetes)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, podConn, &wg)
+	wg.Wait()
 }
 
 func handleDocker(w http.ResponseWriter, r *http.Request) {
@@ -378,98 +338,18 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 		attachConnArguments.Host,
 		attachConnArguments.Port,
 		attachConnArguments.MachineID)
-
+	resizer := docker.X{
+		Client:            client,
+		TerminalResizeURI: TerminalResizeURI,
+	}
 	defer containerConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
-	go containerToClient(ctx, cancel, clientConn, containerConn, &wg)
-	go clientToContainerDocker(ctx, cancel, clientConn, containerConn, client, TerminalResizeURI, &wg)
+	go ToClient(ctx, cancel, clientConn, &wg, containerConn, Docker)
+	go ToHost(ctx, cancel, clientConn, containerConn, &wg, &resizer, Docker)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, containerConn, &wg)
 	wg.Wait()
-}
-
-func clientToContainerLXD(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, ControlConn *websocket.Conn, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer cancel()
-	clientConn.SetReadDeadline(time.Now().Add(*pongTimeout))
-	clientConn.SetPongHandler(func(string) error { clientConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
-	containerConn.SetReadDeadline(time.Now().Add(*pongTimeout))
-	containerConn.SetPongHandler(func(string) error { containerConn.SetReadDeadline(time.Now().Add(*pongTimeout)); return nil })
-	for {
-		r, err := sheller.GetNextReader(ctx, clientConn)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		if r == nil {
-			return
-		}
-		dataTypeBuf := make([]byte, 1)
-		_, err = r.Read(dataTypeBuf)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		switch dataTypeBuf[0] {
-		case 0:
-			keystroke := make([]byte, 1)
-			dataLength, err := r.Read(keystroke)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-			if dataLength == -1 {
-				log.Println("failed to get the correct number of bytes read, ignoring message")
-				continue
-			}
-			err = containerConn.WriteMessage(websocket.BinaryMessage, keystroke)
-			if err != nil {
-				log.Printf("failed to write to tty: %s", err)
-			}
-		case 1:
-			decoder := json.NewDecoder(r)
-			resizeMessage := machine.TerminalSize{}
-			err := decoder.Decode(&resizeMessage)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-			err = lxd.ResizeTerminal(ControlConn, resizeMessage)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-		}
-	}
-}
-
-func containerToClient(ctx context.Context, cancel context.CancelFunc, clientConn *websocket.Conn, containerConn *websocket.Conn, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer cancel()
-	b := bytes.Buffer{}
-	writer := bufio.NewWriter(&b)
-	for {
-		r, err := sheller.GetNextReader(ctx, containerConn)
-		if err != nil {
-			log.Println(err)
-		}
-		if r == nil {
-			if err := clientConn.WriteControl(websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-				time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
-			} else if err != nil {
-				log.Printf("Error sending close message: %v\n", err)
-			}
-			return
-		}
-		if _, err := io.Copy(writer, r); err != nil {
-			log.Printf("Reading from websocket: %v", err)
-			return
-		}
-		clientConn.WriteMessage(websocket.BinaryMessage, b.Bytes())
-		b.Reset()
-	}
 }
 
 func handleLXD(w http.ResponseWriter, r *http.Request) {
@@ -506,38 +386,21 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	defer websocketStream.Close()
 	defer controlConn.Close()
 	var wg sync.WaitGroup
-	_, job_id_exists := vars["job_id"]
-	if !job_id_exists {
-		clientConn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		defer clientConn.Close()
-		wg.Add(4)
-		go containerToClient(ctx, cancel, clientConn, websocketStream, &wg)
-		go clientToContainerLXD(ctx, cancel, clientConn, websocketStream, controlConn, &wg)
-		go pingWebsocket(ctx, cancel, clientConn, &wg)
-		go pingWebsocket(ctx, cancel, websocketStream, &wg)
-		wg.Wait()
-	} else {
-		job_id := vars["job_id"]
-		prod, err := stream.CreateStreamProducer(job_id)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		command := vars["command"]
-		buf := []byte(command)
-		if err := websocketStream.WriteMessage(websocket.BinaryMessage, buf); err != nil {
-			log.Printf("Writing command to websocket: %v", err)
-			return
-		}
-		wg.Add(1)
-		go stream.HostProducerWebsocket(ctx, cancel, &wg, websocketStream, prod)
-		wg.Wait()
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err)
+		return
 	}
-
+	defer clientConn.Close()
+	wg.Add(4)
+	resizer := lxd.X{
+		ControlConn: controlConn,
+	}
+	go ToClient(ctx, cancel, clientConn, &wg, websocketStream, LXD)
+	go ToHost(ctx, cancel, clientConn, websocketStream, &wg, &resizer, LXD)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	go pingWebsocket(ctx, cancel, websocketStream, &wg)
+	wg.Wait()
 }
 
 func startSSH(session *ssh.Session) error {
@@ -677,8 +540,8 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"] + "," + vars["command"]))
-
+	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["command"] + "," + vars["encrypted_msg"]))
+	log.Println(vars)
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
 	if sha != mac {
@@ -726,7 +589,13 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	remoteStdout = cancelable.NewCancelableReader(ctx, remoteStdout)
-
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println("")
+		log.Println(err)
+		return
+	}
+	defer conn.Close()
 	err = startSSH(session)
 	if err != nil {
 		log.Println(err)
@@ -736,12 +605,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 
 	_, job_id_exists := vars["job_id"]
 	if !job_id_exists {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		defer conn.Close()
 		wg.Add(3)
 		go clientToHostSSH(ctx, cancel, conn, &wg, remoteStdin, session)
 		go hostToClient(ctx, cancel, conn, &wg, remoteStdout)
@@ -754,16 +617,16 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 			log.Println(err)
 			return
 		}
-		command := vars["command"]
-		// create a reader
-		buf := []byte(command)
-		reader := bytes.NewReader(buf)
-		if _, err := io.Copy(remoteStdin, reader); err != nil {
-			log.Printf("Reading from websocket: %v", err)
-			return
-		}
-		wg.Add(1)
+		log.Println(job_id)
+		wg.Add(3)
+		// non-interactive case does not append any bytes
+		// todo:
+		// - find a way to separate the stdout and the
+		//   exit code of the script and send them back
+		//   to the client.
+		go clientToHost(ctx, cancel, conn, &wg, remoteStdin)
 		go stream.HostProducer(ctx, cancel, &wg, remoteStdout, prod)
+		go pingWebsocket(ctx, cancel, conn, &wg)
 		wg.Wait()
 	}
 	log.Println("SSH connection finished")
@@ -840,6 +703,7 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	flag.Parse()
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	upgrader = websocket.Upgrader{
 		ReadBufferSize:   1024,
@@ -852,19 +716,10 @@ func main() {
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
 	m.HandleFunc("/consume-logs/{job-id}", handleLogsConsumer)
-
 	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{command}/{mac}", handleKubernetes)
-	m.HandleFunc("/k8s-stream/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleKubernetes)
-
 	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{mac}", handleDocker)
-	m.HandleFunc("/docker-stream/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleDocker)
-
 	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{mac}", handleLXD)
-	m.HandleFunc("/lxd-stream/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleLXD)
-
-	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{mac}", handleSSH)
-	m.HandleFunc("/ssh-stream/{user}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{job_id}/{mac}", handleSSH)
-
+	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{command}/{encrypted_msg}/{mac}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{job_id}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,
