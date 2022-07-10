@@ -115,11 +115,11 @@ func EstablishIOWebsockets(vars map[string]string) (*websocket.Conn, *websocket.
 	return websocketStream, controlConn, nil
 }
 
-type X struct {
+type Terminal struct {
 	ControlConn *websocket.Conn
 }
 
-func (x *X) Resize(size machine.TerminalSize) error {
+func (x *Terminal) Resize(size machine.TerminalSize) error {
 	msg := api.ContainerExecControl{}
 	msg.Command = "window-resize"
 	msg.Args = make(map[string]string)

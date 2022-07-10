@@ -166,12 +166,12 @@ func EstablishAttachIOWebsocket(params *AttachConnParameters, args *AttachConnAr
 	return podConn, Response, nil
 }
 
-type X struct {
+type Terminal struct {
 	Client            *http.Client
 	TerminalResizeURI string
 }
 
-func (x *X) Resize(size machine.TerminalSize) error {
+func (x *Terminal) Resize(size machine.TerminalSize) error {
 	resizeMessage := struct {
 		H int `json:"h"`
 		W int `json:"w"`
