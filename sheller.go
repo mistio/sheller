@@ -338,15 +338,15 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 		attachConnArguments.Host,
 		attachConnArguments.Port,
 		attachConnArguments.MachineID)
-	resizer := docker.X{
+	resizer := docker.Terminal{
 		Client:            client,
 		TerminalResizeURI: TerminalResizeURI,
 	}
 	defer containerConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
-	go ToClient(ctx, cancel, clientConn, &wg, containerConn, Docker)
 	go ToHost(ctx, cancel, clientConn, containerConn, &wg, &resizer, Docker)
+	go ToClient(ctx, cancel, clientConn, &wg, containerConn, Docker)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, containerConn, &wg)
 	wg.Wait()
@@ -393,11 +393,11 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 	wg.Add(4)
-	resizer := lxd.X{
+	resizer := lxd.Terminal{
 		ControlConn: controlConn,
 	}
-	go ToClient(ctx, cancel, clientConn, &wg, websocketStream, LXD)
 	go ToHost(ctx, cancel, clientConn, websocketStream, &wg, &resizer, LXD)
+	go ToClient(ctx, cancel, clientConn, &wg, websocketStream, LXD)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, websocketStream, &wg)
 	wg.Wait()
@@ -602,7 +602,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var wg sync.WaitGroup
-
 	_, job_id_exists := vars["job_id"]
 	if !job_id_exists {
 		wg.Add(3)
@@ -617,15 +616,9 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 			log.Println(err)
 			return
 		}
-		log.Println(job_id)
 		wg.Add(3)
-		// non-interactive case does not append any bytes
-		// todo:
-		// - find a way to separate the stdout and the
-		//   exit code of the script and send them back
-		//   to the client.
 		go clientToHost(ctx, cancel, conn, &wg, remoteStdin)
-		go stream.HostProducer(ctx, cancel, &wg, remoteStdout, prod)
+		go stream.HostProducer(ctx, cancel, conn, &wg, remoteStdout, prod, job_id)
 		go pingWebsocket(ctx, cancel, conn, &wg)
 		wg.Wait()
 	}
@@ -716,10 +709,13 @@ func main() {
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
 	m.HandleFunc("/consume-logs/{job-id}", handleLogsConsumer)
-	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{command}/{mac}", handleKubernetes)
-	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{mac}", handleDocker)
-	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{command}/{mac}", handleLXD)
+	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{mac}", handleKubernetes)
+	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
+	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{command}/{encrypted_msg}/{mac}", handleSSH)
+	// TODO:
+	// Make job_id optional
+	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{command}/{encrypted_msg}/{mac}/{job_id}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{job_id}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,

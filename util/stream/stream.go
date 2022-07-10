@@ -1,8 +1,8 @@
 package stream
 
 import (
+	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"log"
 	sheller "sheller/lib"
@@ -13,28 +13,26 @@ import (
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 )
 
-func createStreamEnv() (*stream.Environment, error) {
-	env, err := stream.NewEnvironment(
-		stream.NewEnvironmentOptions().
-			SetHost("rabbitmq").
-			SetPort(5552).
-			SetUser("guest").
-			SetPassword("guest"))
-	if err != nil {
-		log.Println("New")
-		return nil, err
-	}
-	return env, nil
-}
+const (
+	host     = "rabbitmq"
+	port     = 5552
+	user     = "guest"
+	password = "guest"
+)
 
 func CreateStreamProducer(job_id string) (*stream.Producer, error) {
-	env, err := createStreamEnv()
+	env, err := stream.NewEnvironment(
+		stream.NewEnvironmentOptions().
+			SetHost(host).
+			SetPort(port).
+			SetUser(user).
+			SetPassword(password))
 	if err != nil {
 		return nil, err
 	}
 	err = env.DeclareStream(job_id,
 		&stream.StreamOptions{
-			MaxLengthBytes: stream.ByteCapacity{}.GB(2),
+			MaxLengthBytes: stream.ByteCapacity{}.MB(300),
 		},
 	)
 	if err != nil {
@@ -47,7 +45,7 @@ func CreateStreamProducer(job_id string) (*stream.Producer, error) {
 	return producer, nil
 }
 
-func HostProducer(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup, reader io.Reader, producer *stream.Producer) {
+func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader, producer *stream.Producer, job_id string) {
 	defer wg.Done()
 	defer cancel()
 	defer func() {
@@ -56,8 +54,7 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitG
 			log.Println(err)
 		}
 	}()
-	// for testing purposes
-	go jobStreamConsumer()
+	job_id_bytes := []byte(job_id)
 	for {
 		if ctx.Err() != nil {
 			return
@@ -72,6 +69,15 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitG
 		} else {
 			b = b[:n]
 		}
+		if bytes.HasPrefix(b, job_id_bytes) {
+			return_code := bytes.Replace(b, job_id_bytes, []byte{}, 1)
+			err := conn.WriteMessage(websocket.BinaryMessage, return_code)
+			if err != nil {
+				log.Printf("sending return_code to client: %v\n", err)
+			}
+		}
+		// log for testing purposes
+		log.Println(string(b))
 		err := producer.Send(amqp.NewMessage(b))
 		if err != nil {
 			log.Println(err)
@@ -80,7 +86,7 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitG
 	}
 }
 
-func HostProducerWebsocket(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup, conn *websocket.Conn, producer *stream.Producer) {
+func HostProducerWebsocket(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup, conn *websocket.Conn, producer *stream.Producer, job_id string) {
 	defer wg.Done()
 	defer cancel()
 	defer func() {
@@ -89,8 +95,6 @@ func HostProducerWebsocket(ctx context.Context, cancel context.CancelFunc, wg *s
 			log.Println(err)
 		}
 	}()
-	// for testing purposes
-	go jobStreamConsumer()
 	for {
 		if ctx.Err() != nil {
 			return
@@ -124,16 +128,22 @@ func HostProducerWebsocket(ctx context.Context, cancel context.CancelFunc, wg *s
 	}
 }
 
-func jobStreamConsumer() {
+func jobStreamConsumer(job_id string) {
 	// add ctx
-	job_id := "test"
-	env, err := createStreamEnv()
+	env, err := stream.NewEnvironment(
+		stream.NewEnvironmentOptions().
+			SetHost(host).
+			SetPort(port).
+			SetUser(user).
+			SetPassword(password))
 	if err != nil {
-		log.Println(err)
-		return
+		log.Print(err)
 	}
 	handleMessages := func(consumerContext stream.ConsumerContext, message *amqp.Message) {
-		fmt.Printf("%s", message.Data)
+		for _, v := range message.Data {
+			log.Println(string(v))
+
+		}
 		// TODO:
 		// write back to a websocket connection that
 		// the client will use to read the streaming logs
@@ -162,10 +172,14 @@ func jobStreamConsumer() {
 }
 
 func JobStreamConsumerWebsocket(job_id string, conn *websocket.Conn) {
-	env, err := createStreamEnv()
+	env, err := stream.NewEnvironment(
+		stream.NewEnvironmentOptions().
+			SetHost(host).
+			SetPort(port).
+			SetUser(user).
+			SetPassword(password))
 	if err != nil {
 		log.Println(err)
-		return
 	}
 	handleMessages := func(consumerContext stream.ConsumerContext, message *amqp.Message) {
 		for _, b := range message.Data {
