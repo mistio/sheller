@@ -54,7 +54,6 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 			log.Println(err)
 		}
 	}()
-	job_id_bytes := []byte(job_id)
 	for {
 		if ctx.Err() != nil {
 			return
@@ -69,16 +68,12 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 		} else {
 			b = b[:n]
 		}
-		if bytes.HasPrefix(b, job_id_bytes) {
-			return_code := bytes.Replace(b, job_id_bytes, []byte{}, 1)
-			err := conn.WriteMessage(websocket.BinaryMessage, return_code)
-			if err != nil {
-				log.Printf("sending return_code to client: %v\n", err)
-			}
+		data := bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+		err := conn.WriteMessage(websocket.BinaryMessage, data)
+		if err != nil {
+			log.Printf("sending return_code to client: %v\n", err)
 		}
-		// log for testing purposes
-		log.Println(string(b))
-		err := producer.Send(amqp.NewMessage(b))
+		err = producer.Send(amqp.NewMessage(data))
 		if err != nil {
 			log.Println(err)
 			return
