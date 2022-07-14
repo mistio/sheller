@@ -3,11 +3,14 @@ package stream
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
 	sheller "sheller/lib"
+	"strings"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
@@ -26,7 +29,8 @@ func CreateStreamProducer(job_id string) (*stream.Producer, error) {
 			SetHost(host).
 			SetPort(port).
 			SetUser(user).
-			SetPassword(password))
+			SetPassword(password).
+			SetMaxConsumersPerClient(20))
 	if err != nil {
 		return nil, err
 	}
@@ -123,49 +127,6 @@ func HostProducerWebsocket(ctx context.Context, cancel context.CancelFunc, wg *s
 	}
 }
 
-func jobStreamConsumer(job_id string) {
-	// add ctx
-	env, err := stream.NewEnvironment(
-		stream.NewEnvironmentOptions().
-			SetHost(host).
-			SetPort(port).
-			SetUser(user).
-			SetPassword(password))
-	if err != nil {
-		log.Print(err)
-	}
-	handleMessages := func(consumerContext stream.ConsumerContext, message *amqp.Message) {
-		for _, v := range message.Data {
-			log.Println(string(v))
-
-		}
-		// TODO:
-		// write back to a websocket connection that
-		// the client will use to read the streaming logs
-	}
-	_, err = env.NewConsumer(job_id,
-		handleMessages,
-		stream.NewConsumerOptions().
-			SetConsumerName(job_id+"consumer"). // set a consumerOffsetNumber name
-			SetOffset(stream.OffsetSpecification{}.First()))
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	/*
-		err = consumerNext.Close()
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		err = env.DeleteStream(job_id)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-	*/
-}
-
 func JobStreamConsumerWebsocket(job_id string, conn *websocket.Conn) {
 	env, err := stream.NewEnvironment(
 		stream.NewEnvironmentOptions().
@@ -177,18 +138,20 @@ func JobStreamConsumerWebsocket(job_id string, conn *websocket.Conn) {
 		log.Println(err)
 	}
 	handleMessages := func(consumerContext stream.ConsumerContext, message *amqp.Message) {
-		for _, b := range message.Data {
-			err := conn.WriteMessage(websocket.BinaryMessage, b)
-			if err != nil {
-				log.Println(err)
-				return
-			}
+		data := fmt.Sprintf("%s\n", message.Data)
+
+		err := conn.WriteMessage(websocket.BinaryMessage, []byte(strings.ReplaceAll(strings.ReplaceAll(data, "[", ""), "]", "")))
+		if err != nil {
+			log.Println(err)
+			return
 		}
 	}
+	consumer_id := uuid.New().String()
+
 	_, err = env.NewConsumer(job_id,
 		handleMessages,
 		stream.NewConsumerOptions().
-			SetConsumerName(job_id+"consumer"). // set a consumerOffsetNumber name
+			SetConsumerName(job_id+consumer_id). // set a consumerOffsetNumber name
 			SetOffset(stream.OffsetSpecification{}.First()))
 	if err != nil {
 		log.Println(err)
@@ -200,10 +163,11 @@ func JobStreamConsumerWebsocket(job_id string, conn *websocket.Conn) {
 			log.Println(err)
 			return
 		}
-		err = env.DeleteStream(job_id)
-		if err != nil {
-			log.Println(err)
-			return
-		}
+
+			err = env.DeleteStream(job_id)
+			if err != nil {
+				log.Println(err)
+				return
+			}
 	*/
 }

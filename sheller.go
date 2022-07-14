@@ -56,7 +56,7 @@ var (
 	listen           = flag.String("listen", "127.0.0.1:8086", "Address to listen to.")
 	dialTimeout      = flag.Duration("dial_timeout", 10*time.Second, "Dial timeout.")
 	handshakeTimeout = flag.Duration("handshake_timeout", 10*time.Second, "Handshake timeout.")
-	writeTimeout     = flag.Duration("write_timeout", 10*time.Second, "Write timeout.")
+	writeTimeout     = flag.Duration("write_timeout", 100*time.Second, "Write timeout.")
 	pongTimeout      = flag.Duration("pong_timeout", 10*time.Second, "Pong message timeout.")
 	// Send pings to peer with this period. Must be less than pongTimeout.
 	pingPeriod     = (*pongTimeout * 9) / 10
@@ -215,16 +215,20 @@ func ToClient(ctx context.Context, cancel context.CancelFunc, client *websocket.
 }
 
 func handleLogsConsumer(w http.ResponseWriter, r *http.Request) {
-	//	ctx, cancel := context.WithCancel(context.Background())
-	//defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	vars := mux.Vars(r)
 	job_id := vars["job_id"]
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Print(err)
 	}
-	go stream.JobStreamConsumerWebsocket(job_id, clientConn)
 	defer clientConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	go stream.JobStreamConsumerWebsocket(job_id, clientConn)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	wg.Wait()
 }
 
 func handleKubernetes(w http.ResponseWriter, r *http.Request) {
@@ -708,7 +712,7 @@ func main() {
 	}
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
-	m.HandleFunc("/consume-logs/{job-id}", handleLogsConsumer)
+	m.HandleFunc("/stream/{job_id}", handleLogsConsumer)
 	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{mac}", handleKubernetes)
 	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
 	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
