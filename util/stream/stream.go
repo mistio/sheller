@@ -3,6 +3,7 @@ package stream
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -23,7 +24,7 @@ const (
 	password = "guest"
 )
 
-func CreateStreamProducer(job_id string) (*stream.Producer, error) {
+func createEnv() (*stream.Environment, error) {
 	env, err := stream.NewEnvironment(
 		stream.NewEnvironmentOptions().
 			SetHost(host).
@@ -31,6 +32,27 @@ func CreateStreamProducer(job_id string) (*stream.Producer, error) {
 			SetUser(user).
 			SetPassword(password).
 			SetMaxConsumersPerClient(20))
+	if err != nil {
+		return nil, err
+	}
+	return env, nil
+}
+
+func DeleteStream(job_id string) error {
+	env, err := createEnv()
+	if err != nil {
+		return err
+	}
+	defer env.Close()
+	err = env.DeleteStream(job_id)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func CreateStreamProducer(job_id string) (*stream.Producer, error) {
+	env, err := createEnv()
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +78,10 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 		err := producer.Close()
 		if err != nil {
 			log.Println(err)
+		}
+		err = DeleteStream(job_id)
+		if err != nil {
+			log.Println(errors.New("delete stream: " + err.Error()))
 		}
 	}()
 	for {
@@ -93,6 +119,7 @@ func HostProducerWebsocket(ctx context.Context, cancel context.CancelFunc, wg *s
 		if err != nil {
 			log.Println(err)
 		}
+
 	}()
 	for {
 		if ctx.Err() != nil {
@@ -127,16 +154,14 @@ func HostProducerWebsocket(ctx context.Context, cancel context.CancelFunc, wg *s
 	}
 }
 
-func JobStreamConsumerWebsocket(job_id string, conn *websocket.Conn) {
-	env, err := stream.NewEnvironment(
-		stream.NewEnvironmentOptions().
-			SetHost(host).
-			SetPort(port).
-			SetUser(user).
-			SetPassword(password))
+func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, job_id string, conn *websocket.Conn) {
+	defer cancel()
+	env, err := createEnv()
 	if err != nil {
 		log.Println(err)
+		return
 	}
+	defer env.Close()
 	handleMessages := func(consumerContext stream.ConsumerContext, message *amqp.Message) {
 		data := fmt.Sprintf("%s\n", message.Data)
 
@@ -147,8 +172,7 @@ func JobStreamConsumerWebsocket(job_id string, conn *websocket.Conn) {
 		}
 	}
 	consumer_id := uuid.New().String()
-
-	_, err = env.NewConsumer(job_id,
+	consumerNext, err := env.NewConsumer(job_id,
 		handleMessages,
 		stream.NewConsumerOptions().
 			SetConsumerName(job_id+consumer_id). // set a consumerOffsetNumber name
@@ -157,17 +181,14 @@ func JobStreamConsumerWebsocket(job_id string, conn *websocket.Conn) {
 		log.Println(err)
 		return
 	}
-	/*
-		err = consumerNext.Close()
-		if err != nil {
-			log.Println(err)
-			return
-		}
-
-			err = env.DeleteStream(job_id)
+	for {
+		select {
+		case <-ctx.Done():
+			err = consumerNext.Close()
 			if err != nil {
 				log.Println(err)
-				return
 			}
-	*/
+			return
+		}
+	}
 }

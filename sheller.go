@@ -76,8 +76,8 @@ const (
 )
 
 const (
-	DataMSG = iota
-	ResizeMSG
+	dataMessage = iota
+	resizeMessage
 )
 
 func init() {
@@ -111,6 +111,23 @@ func init() {
 			log.Fatal(err)
 		}
 	}
+}
+
+func handleLogsConsumer(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	vars := mux.Vars(r)
+	job_id := vars["job_id"]
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Print(err)
+	}
+	defer clientConn.Close()
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	go stream.JobStreamConsumerWebsocket(ctx, cancel, job_id, clientConn)
+	go pingWebsocket(ctx, cancel, clientConn, &wg)
+	wg.Wait()
 }
 
 func WriteToClient(ctx context.Context, cancel func(), src *websocket.Conn, dst *websocket.Conn, MachineType int) error {
@@ -166,7 +183,7 @@ func ToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Co
 			log.Println(err)
 		}
 		switch messageType[0] {
-		case DataMSG:
+		case dataMessage:
 			if _, err := io.Copy(writer, r); err != nil {
 				log.Printf("Reading from websocket: %v", err)
 				return
@@ -185,7 +202,7 @@ func ToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Co
 				log.Printf("failed to write to tty: %s", err)
 			}
 			b.Reset()
-		case ResizeMSG:
+		case resizeMessage:
 			if resizer != nil {
 				decoder := json.NewDecoder(r)
 				resizeMessage := machine.TerminalSize{}
@@ -214,23 +231,6 @@ func ToClient(ctx context.Context, cancel context.CancelFunc, client *websocket.
 	}
 }
 
-func handleLogsConsumer(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	vars := mux.Vars(r)
-	job_id := vars["job_id"]
-	clientConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Print(err)
-	}
-	defer clientConn.Close()
-	wg := sync.WaitGroup{}
-	wg.Add(2)
-	go stream.JobStreamConsumerWebsocket(job_id, clientConn)
-	go pingWebsocket(ctx, cancel, clientConn, &wg)
-	wg.Wait()
-}
-
 func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -243,7 +243,7 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(pod + "," + container + "," + cluster + "," + vars["expiry"] + "," + vars["encrypted_msg"] + "," + vars["command"]))
+	h.Write([]byte(pod + "," + container + "," + cluster + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -285,7 +285,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(name + "," + cluster + "," + machineID + "," + host + "," + port + "," + vars["expiry"] + "," + encrypted_msg + "," + vars["command"]))
+	h.Write([]byte(name + "," + cluster + "," + machineID + "," + host + "," + port + "," + vars["expiry"] + "," + encrypted_msg))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -370,7 +370,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(name + "," + cluster + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"] + "," + vars["command"]))
+	h.Write([]byte(name + "," + cluster + "," + host + "," + port + "," + vars["expiry"] + "," + vars["encrypted_msg"]))
 
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -595,7 +595,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	remoteStdout = cancelable.NewCancelableReader(ctx, remoteStdout)
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println("")
 		log.Println(err)
 		return
 	}
