@@ -10,6 +10,7 @@ import (
 	sheller "sheller/lib"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -98,7 +99,7 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 		} else {
 			b = b[:n]
 		}
-		data := bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+		data := bytes.ReplaceAll(b, []byte("\r"), []byte("\n"))
 		err := conn.WriteMessage(websocket.BinaryMessage, data)
 		if err != nil {
 			log.Printf("sending return_code to client: %v\n", err)
@@ -156,6 +157,7 @@ func HostProducerWebsocket(ctx context.Context, cancel context.CancelFunc, wg *s
 
 func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, job_id string, conn *websocket.Conn) {
 	defer cancel()
+	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(0)); return nil })
 	env, err := createEnv()
 	if err != nil {
 		log.Println(err)

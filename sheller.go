@@ -56,7 +56,7 @@ var (
 	listen           = flag.String("listen", "127.0.0.1:8086", "Address to listen to.")
 	dialTimeout      = flag.Duration("dial_timeout", 10*time.Second, "Dial timeout.")
 	handshakeTimeout = flag.Duration("handshake_timeout", 10*time.Second, "Handshake timeout.")
-	writeTimeout     = flag.Duration("write_timeout", 100*time.Second, "Write timeout.")
+	writeTimeout     = flag.Duration("write_timeout", 10*time.Second, "Write timeout.")
 	pongTimeout      = flag.Duration("pong_timeout", 10*time.Second, "Pong message timeout.")
 	// Send pings to peer with this period. Must be less than pongTimeout.
 	pingPeriod     = (*pongTimeout * 9) / 10
@@ -158,7 +158,7 @@ func WriteToClient(ctx context.Context, cancel func(), src *websocket.Conn, dst 
 	}
 }
 
-func ToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, host *websocket.Conn, wg *sync.WaitGroup, resizer Resizer, MachineType int) {
+func ClientToMachine(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, resizer Resizer, MachineType int) {
 	defer wg.Done()
 	defer cancel()
 	// websocket -> server
@@ -188,7 +188,7 @@ func ToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Co
 				log.Printf("Reading from websocket: %v", err)
 				return
 			}
-			data := []byte{}
+			var data []byte
 			if MachineType == Kubernetes {
 				data = append([]byte{0}, b.Bytes()...)
 				if bytes.Contains(data, []byte{newline}) {
@@ -216,7 +216,7 @@ func ToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Co
 		}
 	}
 }
-func ToClient(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, MachineType int) {
+func MachineToClient(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, MachineType int) {
 	defer wg.Done()
 	defer cancel()
 	if err := WriteToClient(ctx, cancel, client, host, MachineType); err == io.EOF {
@@ -264,8 +264,8 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 		fmt.Print(err)
 	}
 	wg.Add(4)
-	go ToHost(ctx, cancel, clientConn, podConn, &wg, nil, Kubernetes)
-	go ToClient(ctx, cancel, clientConn, &wg, podConn, Kubernetes)
+	go ClientToMachine(ctx, cancel, clientConn, &wg, podConn, nil, Kubernetes)
+	go MachineToClient(ctx, cancel, clientConn, &wg, podConn, Kubernetes)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, podConn, &wg)
 	wg.Wait()
@@ -349,8 +349,8 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	defer containerConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
-	go ToHost(ctx, cancel, clientConn, containerConn, &wg, &resizer, Docker)
-	go ToClient(ctx, cancel, clientConn, &wg, containerConn, Docker)
+	go ClientToMachine(ctx, cancel, clientConn, &wg, containerConn, &resizer, Docker)
+	go MachineToClient(ctx, cancel, clientConn, &wg, containerConn, Docker)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, containerConn, &wg)
 	wg.Wait()
@@ -400,8 +400,8 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	resizer := lxd.Terminal{
 		ControlConn: controlConn,
 	}
-	go ToHost(ctx, cancel, clientConn, websocketStream, &wg, &resizer, LXD)
-	go ToClient(ctx, cancel, clientConn, &wg, websocketStream, LXD)
+	go ClientToMachine(ctx, cancel, clientConn, &wg, websocketStream, &resizer, LXD)
+	go MachineToClient(ctx, cancel, clientConn, &wg, websocketStream, LXD)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, websocketStream, &wg)
 	wg.Wait()

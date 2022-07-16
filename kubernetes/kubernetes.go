@@ -133,6 +133,3 @@ func execRequest(config *rest.Config, opts *execConfig) (*http.Request, error) {
 	}
 	return Request, nil
 }
-
-type x struct {
-}
