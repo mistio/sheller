@@ -7,8 +7,7 @@ COPY go.* ./
 RUN go mod download
 
 ADD . /go/src/app
-RUN --mount=type=cache,target=/root/.cache/go-build \
-go build -o /go/bin/app
+RUN go build -o /go/bin/app
 
 FROM gcr.io/distroless/base
 COPY --from=build-env /go/bin/app /
