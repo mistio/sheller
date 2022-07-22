@@ -20,6 +20,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -407,27 +408,6 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 }
 
-func startSSH(session *ssh.Session) error {
-	// Set up terminal modes
-	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,
-		ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud
-		ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
-	}
-
-	// Request pseudo terminal
-	if err := session.RequestPty("xterm-256color", 80, 40, modes); err != nil {
-		return fmt.Errorf("request for pseudo terminal failed: %s", err)
-	}
-
-	// Start remote shell
-	if err := session.Shell(); err != nil {
-		return fmt.Errorf("failed to start shell: %s", err)
-	}
-
-	return nil
-}
-
 func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer cancel()
@@ -540,11 +520,12 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	host := vars["host"]
 	port := vars["port"]
 	mac := vars["mac"]
+	command := vars["command"]
 	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + vars["command"] + "," + vars["encrypted_msg"]))
+	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + command + "," + vars["encrypted_msg"]))
 	log.Println(vars)
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
@@ -593,17 +574,54 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	remoteStdout = cancelable.NewCancelableReader(ctx, remoteStdout)
+
+	// Set up terminal modes
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud
+		ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
+	}
+
+	// Request pseudo terminal
+	if err := session.RequestPty("xterm-256color", 80, 40, modes); err != nil {
+		log.Printf("request for pseudo terminal failed: %s\n", err)
+		return
+	}
+	// When refactor to POST request instead
+	// of GET, check for an empty value.
+	// For now use a word to describe when
+	// we want to use the machine's default
+	// terminal so the url doesn't look weird.
+	if command == "default" {
+		// Start remote shell
+		if err := session.Shell(); err != nil {
+			log.Printf("failed to start shell: %s\n", err)
+			return
+		}
+
+	} else {
+
+		decodedCommand, err := base64.StdEncoding.DecodeString(command)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		err = session.Start(string(decodedCommand))
+		if err != nil {
+			log.Printf("failed to start with command: %s\n", err)
+			return
+		}
+
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 	defer conn.Close()
-	err = startSSH(session)
-	if err != nil {
-		log.Println(err)
-		return
-	}
+
 	var wg sync.WaitGroup
 	_, job_id_exists := vars["job_id"]
 	if !job_id_exists {
