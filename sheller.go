@@ -587,12 +587,12 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		log.Printf("request for pseudo terminal failed: %s\n", err)
 		return
 	}
-	// When refactor to POST request instead
-	// of GET, check for an empty value.
-	// For now use a word to describe when
-	// we want to use the machine's default
-	// terminal so the url doesn't look weird.
-	if command == "default" {
+	decodedCommand, err := base64.StdEncoding.DecodeString(command)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	if string(decodedCommand) == "default" {
 		// Start remote shell
 		if err := session.Shell(); err != nil {
 			log.Printf("failed to start shell: %s\n", err)
@@ -600,12 +600,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		}
 
 	} else {
-
-		decodedCommand, err := base64.StdEncoding.DecodeString(command)
-		if err != nil {
-			log.Println(err)
-			return
-		}
 
 		err = session.Start(string(decodedCommand))
 		if err != nil {
