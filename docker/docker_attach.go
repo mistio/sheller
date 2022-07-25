@@ -43,6 +43,11 @@ type attachOptions struct {
 	stderr bool
 }
 
+type TerminalSize struct {
+	Height int `json:"height"`
+	Width  int `json:"width"`
+}
+
 func PrepareAttachConnectionParameters(vars map[string]string) (AttachConnParameters, error) {
 	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
 	if err != nil {
@@ -171,7 +176,7 @@ type Terminal struct {
 	TerminalResizeURI string
 }
 
-func (x *Terminal) Resize(size machine.TerminalSize) error {
+func (t *Terminal) Resize(size machine.TerminalSize) error {
 	resizeMessage := struct {
 		H int `json:"h"`
 		W int `json:"w"`
@@ -180,7 +185,7 @@ func (x *Terminal) Resize(size machine.TerminalSize) error {
 	if err != nil {
 		return err
 	}
-	_, err = x.Client.Post(x.TerminalResizeURI, "application/json", bytes.NewBuffer(resizeMessageJSON))
+	_, err = t.Client.Post(t.TerminalResizeURI, "application/json", bytes.NewBuffer(resizeMessageJSON))
 	if err != nil {
 		return err
 	}

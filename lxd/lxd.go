@@ -15,6 +15,11 @@ import (
 	"github.com/lxc/lxd/shared/api"
 )
 
+type TerminalSize struct {
+	Height int `json:"height"`
+	Width  int `json:"width"`
+}
+
 func PrepareConnectionParameters(vars map[string]string) (string, *lxd.ConnectionArgs, error) {
 	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
 	if err != nil {
@@ -119,7 +124,7 @@ type Terminal struct {
 	ControlConn *websocket.Conn
 }
 
-func (x *Terminal) Resize(size machine.TerminalSize) error {
+func (t *Terminal) Resize(size machine.TerminalSize) error {
 	msg := api.ContainerExecControl{}
 	msg.Command = "window-resize"
 	msg.Args = make(map[string]string)
@@ -129,7 +134,7 @@ func (x *Terminal) Resize(size machine.TerminalSize) error {
 	if err != nil {
 		return err
 	}
-	err = x.ControlConn.WriteMessage(websocket.TextMessage, buf)
+	err = t.ControlConn.WriteMessage(websocket.TextMessage, buf)
 	if err != nil {
 		return err
 	}
