@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	sheller "sheller/lib"
 	"strings"
 	"sync"
 	"time"
@@ -19,10 +18,12 @@ import (
 )
 
 const (
-	host     = "rabbitmq"
-	port     = 5552
-	user     = "guest"
-	password = "guest"
+	host                  = "rabbitmq"
+	port                  = 5552
+	user                  = "guest"
+	password              = "guest"
+	MaxConsumersPerClient = 50
+	StreamCapacity        = 200 // MB
 )
 
 func createEnv() (*stream.Environment, error) {
@@ -32,7 +33,7 @@ func createEnv() (*stream.Environment, error) {
 			SetPort(port).
 			SetUser(user).
 			SetPassword(password).
-			SetMaxConsumersPerClient(20))
+			SetMaxConsumersPerClient(MaxConsumersPerClient))
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +60,7 @@ func CreateStreamProducer(job_id string) (*stream.Producer, error) {
 	}
 	err = env.DeclareStream(job_id,
 		&stream.StreamOptions{
-			MaxLengthBytes: stream.ByteCapacity{}.MB(300),
+			MaxLengthBytes: stream.ByteCapacity{}.MB(StreamCapacity),
 		},
 	)
 	if err != nil {
@@ -105,49 +106,6 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 			log.Printf("sending return_code to client: %v\n", err)
 		}
 		err = producer.Send(amqp.NewMessage(data))
-		if err != nil {
-			log.Println(err)
-			return
-		}
-	}
-}
-
-func HostProducerWebsocket(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup, conn *websocket.Conn, producer *stream.Producer, job_id string) {
-	defer wg.Done()
-	defer cancel()
-	defer func() {
-		err := producer.Close()
-		if err != nil {
-			log.Println(err)
-		}
-
-	}()
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		reader, err := sheller.GetNextReader(ctx, conn)
-		if err != nil {
-			log.Println(err)
-		}
-		b := make([]byte, 32*1024)
-		if n, err := reader.Read(b); err == io.EOF {
-			log.Println("received EOF from host, closing producer...")
-			return
-		} else if err != nil {
-			log.Println(err)
-			return
-		} else {
-			if b[0] == 1 || b[0] == 2 {
-				// b[0]=1 is for kubernetes
-				b = b[1:n]
-			} else if b[0] != 0 {
-				b = b[:n]
-			} else {
-				continue
-			}
-		}
-		err = producer.Send(amqp.NewMessage(b))
 		if err != nil {
 			log.Println(err)
 			return
