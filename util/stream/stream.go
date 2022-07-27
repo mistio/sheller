@@ -40,23 +40,13 @@ func createEnv() (*stream.Environment, error) {
 	return env, nil
 }
 
-func DeleteStream(job_id string) error {
+func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader, job_id string) {
+	defer wg.Done()
+	defer cancel()
 	env, err := createEnv()
 	if err != nil {
-		return err
-	}
-	defer env.Close()
-	err = env.DeleteStream(job_id)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func CreateStreamProducer(job_id string) (*stream.Producer, error) {
-	env, err := createEnv()
-	if err != nil {
-		return nil, err
+		log.Println(err)
+		return
 	}
 	err = env.DeclareStream(job_id,
 		&stream.StreamOptions{
@@ -64,26 +54,26 @@ func CreateStreamProducer(job_id string) (*stream.Producer, error) {
 		},
 	)
 	if err != nil {
-		return nil, err
+		log.Println(err)
 	}
 	producer, err := env.NewProducer(job_id, nil)
 	if err != nil {
-		return nil, err
+		log.Println(err)
+		return
 	}
-	return producer, nil
-}
-
-func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader, producer *stream.Producer, job_id string) {
-	defer wg.Done()
-	defer cancel()
 	defer func() {
 		err := producer.Close()
 		if err != nil {
 			log.Println(err)
+			return
 		}
-		err = DeleteStream(job_id)
+		err = env.DeleteStream(job_id)
 		if err != nil {
 			log.Println(errors.New("delete stream: " + err.Error()))
+		}
+		err = env.Close()
+		if err != nil {
+			log.Println(err)
 		}
 	}()
 	for {

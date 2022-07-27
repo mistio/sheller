@@ -525,14 +525,9 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		wg.Wait()
 	} else {
 		job_id := vars["job_id"]
-		prod, err := stream.CreateStreamProducer(job_id)
-		if err != nil {
-			log.Println(err)
-			return
-		}
 		wg.Add(3)
 		go clientToHost(ctx, cancel, conn, &wg, remoteStdin)
-		go stream.HostProducer(ctx, cancel, conn, &wg, remoteStdout, prod, job_id)
+		go stream.HostProducer(ctx, cancel, conn, &wg, remoteStdout, job_id)
 		go pingWebsocket(ctx, cancel, conn, &wg)
 		wg.Wait()
 	}
