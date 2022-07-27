@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sheller/util/websocketLog"
 	"strings"
 	"sync"
 	"time"
@@ -123,6 +124,14 @@ func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, 
 		return
 	}
 	defer env.Close()
+
+	// Create a logger that logs any errors not only
+	// to stdout but also reports any errors back
+	// to the client throught the websocket connection.
+	WSLogger := websocketLog.WebsocketWriter{
+		Conn: conn,
+	}
+	log := websocketLog.WrapLogger(WSLogger)
 
 	// Handle incoming messages by writing the message to the websocket client.
 	handleMessages := func(consumerContext stream.ConsumerContext, message *amqp.Message) {
