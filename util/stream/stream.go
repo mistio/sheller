@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"sheller/util/websocketLog"
 	"strings"
 	"sync"
 	"time"
@@ -115,7 +114,7 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	}
 }
 
-func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, job_id string, conn *websocket.Conn) {
+func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, job_id string, conn *websocket.Conn, log *log.Logger) {
 	defer cancel()
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(15 * time.Second)); return nil })
 	env, err := createEnv()
@@ -125,23 +124,16 @@ func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, 
 	}
 	defer env.Close()
 
-	// Create a logger that logs any errors not only
-	// to stdout but also reports any errors back
-	// to the client throught the websocket connection.
-	WSLogger := websocketLog.WebsocketWriter{
-		Conn: conn,
-	}
-	log := websocketLog.WrapLogger(WSLogger)
-
 	// Handle incoming messages by writing the message to the websocket client.
 	handleMessages := func(consumerContext stream.ConsumerContext, message *amqp.Message) {
 		data := fmt.Sprintf("%s\n", message.Data)
 		err := conn.WriteMessage(websocket.BinaryMessage, []byte(strings.ReplaceAll(strings.ReplaceAll(data, "[", ""), "]", "")))
 		if err != nil {
-			log.Println(err)
+			fmt.Println(err)
 			return
 		}
 	}
+
 	// Generate a UUID based on RFC 4122.
 	consumer_id := uuid.New().String()
 	consumerNext, err := env.NewConsumer(job_id,

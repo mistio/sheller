@@ -38,6 +38,7 @@ import (
 	"sheller/util/stream"
 	shellerTLSUtil "sheller/util/tls"
 	"sheller/util/websocketIO"
+	"sheller/util/websocketLog"
 	"strconv"
 	"sync"
 	"time"
@@ -117,9 +118,18 @@ func handleLogsConsumer(w http.ResponseWriter, r *http.Request) {
 		fmt.Print(err)
 	}
 	defer clientConn.Close()
+
+	// Create a logger that logs any errors not only
+	// to stdout but also reports any errors back
+	// to the client through the websocket connection.
+	WSLogger := websocketLog.WebsocketWriter{
+		Conn: clientConn,
+	}
+	log := websocketLog.WrapLogger(WSLogger)
+
 	wg := sync.WaitGroup{}
 	wg.Add(2)
-	go stream.JobStreamConsumerWebsocket(ctx, cancel, job_id, clientConn)
+	go stream.JobStreamConsumerWebsocket(ctx, cancel, job_id, clientConn, log)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	wg.Wait()
 }
@@ -422,7 +432,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 
 	// Write Data to it
 	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + command + "," + vars["encrypted_msg"]))
-	log.Println(vars)
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
 	if sha != mac {

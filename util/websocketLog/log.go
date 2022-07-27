@@ -1,5 +1,8 @@
 package websocketLog
 
+// Logs any application errors to a websocket connection
+// apart from logging to the stdout.
+
 import (
 	"io"
 	"log"
