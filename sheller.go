@@ -421,6 +421,18 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer conn.Close()
+
+	WSLogger := websocketLog.WebsocketWriter{
+		Conn: conn,
+	}
+	log := websocketLog.WrapLogger(WSLogger)
+
 	vars := mux.Vars(r)
 	user := vars["user"]
 	host := vars["host"]
@@ -513,13 +525,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		}
 
 	}
-
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	defer conn.Close()
 
 	var wg sync.WaitGroup
 	_, job_id_exists := vars["job_id"]
