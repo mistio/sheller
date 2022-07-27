@@ -43,11 +43,15 @@ func createEnv() (*stream.Environment, error) {
 func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader, job_id string) {
 	defer wg.Done()
 	defer cancel()
+
+	// Create stream environment.
 	env, err := createEnv()
 	if err != nil {
 		log.Println(err)
 		return
 	}
+
+	// Use job_id as the streamName .
 	err = env.DeclareStream(job_id,
 		&stream.StreamOptions{
 			MaxLengthBytes: stream.ByteCapacity{}.MB(StreamCapacity),
@@ -56,11 +60,18 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	if err != nil {
 		log.Println(err)
 	}
+
+	// Create a *stream.Producer and use the stream that was
+	// declared above.
 	producer, err := env.NewProducer(job_id, nil)
 	if err != nil {
 		log.Println(err)
 		return
 	}
+
+	// We don't want to keep the stream when the job is done
+	// so delete the stream before closing the stream
+	// environment.
 	defer func() {
 		err := producer.Close()
 		if err != nil {
@@ -105,32 +116,37 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 
 func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, job_id string, conn *websocket.Conn) {
 	defer cancel()
-	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(0)); return nil })
+	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(15 * time.Second)); return nil })
 	env, err := createEnv()
 	if err != nil {
 		log.Println(err)
 		return
 	}
 	defer env.Close()
+
+	// Handle incoming messages by writing the message to the websocket client.
 	handleMessages := func(consumerContext stream.ConsumerContext, message *amqp.Message) {
 		data := fmt.Sprintf("%s\n", message.Data)
-
 		err := conn.WriteMessage(websocket.BinaryMessage, []byte(strings.ReplaceAll(strings.ReplaceAll(data, "[", ""), "]", "")))
 		if err != nil {
 			log.Println(err)
 			return
 		}
 	}
+	// Generate a UUID based on RFC 4122.
 	consumer_id := uuid.New().String()
 	consumerNext, err := env.NewConsumer(job_id,
 		handleMessages,
 		stream.NewConsumerOptions().
-			SetConsumerName(job_id+consumer_id). // set a consumerOffsetNumber name
+			SetConsumerName(consumer_id).
 			SetOffset(stream.OffsetSpecification{}.First()))
 	if err != nil {
 		log.Println(err)
 		return
 	}
+
+	// Wait until context is done to close the
+	// consumer.
 	for {
 		select {
 		case <-ctx.Done():
