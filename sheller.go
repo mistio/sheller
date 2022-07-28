@@ -70,9 +70,9 @@ const (
 )
 
 const (
-	LXD = iota
+	Kubernetes = iota
 	Docker
-	Kubernetes
+	LXD
 )
 
 func init() {
