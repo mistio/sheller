@@ -639,7 +639,7 @@ func main() {
 	// TODO:
 	// Make job_id optional
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{command}/{encrypted_msg}/{mac}/{job_id}", handleSSH)
-	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{job_id}/{mac}", handleVNC)
+	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,
 		Handler:        m,
