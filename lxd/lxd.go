@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sheller/machine"
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
@@ -15,6 +14,11 @@ import (
 	lxd "github.com/lxc/lxd/client"
 	"github.com/lxc/lxd/shared/api"
 )
+
+type TerminalSize struct {
+	Height int `json:"height"`
+	Width  int `json:"width"`
+}
 
 func PrepareConnectionParameters(vars map[string]string) (string, *lxd.ConnectionArgs, error) {
 	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
@@ -75,7 +79,7 @@ func EstablishIOWebsockets(vars map[string]string) (*websocket.Conn, *websocket.
 	if err != nil {
 		return nil, nil, err
 	}
-	command := strings.Fields(os.Getenv("COMMAND"))
+	command := strings.Fields(vars["command"])
 	if len(command) == 0 {
 		command = []string{"/bin/bash"}
 	}
@@ -115,7 +119,12 @@ func EstablishIOWebsockets(vars map[string]string) (*websocket.Conn, *websocket.
 	}
 	return websocketStream, controlConn, nil
 }
-func ResizeTerminal(controlConn *websocket.Conn, size machine.TerminalSize) error {
+
+type Terminal struct {
+	ControlConn *websocket.Conn
+}
+
+func (t *Terminal) Resize(size machine.TerminalSize) error {
 	msg := api.ContainerExecControl{}
 	msg.Command = "window-resize"
 	msg.Args = make(map[string]string)
@@ -125,7 +134,7 @@ func ResizeTerminal(controlConn *websocket.Conn, size machine.TerminalSize) erro
 	if err != nil {
 		return err
 	}
-	err = controlConn.WriteMessage(websocket.TextMessage, buf)
+	err = t.ControlConn.WriteMessage(websocket.TextMessage, buf)
 	if err != nil {
 		return err
 	}

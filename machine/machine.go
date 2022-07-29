@@ -10,10 +10,15 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+type Resizer interface {
+	Resize(TerminalSize) error
+}
+
 type TerminalSize struct {
 	Height int `json:"height"`
 	Width  int `json:"width"`
 }
+
 type KeyPair struct {
 	PublicKey  string
 	PrivateKey string
@@ -56,4 +61,16 @@ func GetPrivateKey(vars map[string]string) (ssh.AuthMethod, error) {
 		return nil, err
 	}
 	return ssh.PublicKeys(priv), nil
+}
+
+type Terminal struct {
+	Session *ssh.Session
+}
+
+func (t *Terminal) Resize(size TerminalSize) error {
+	err := t.Session.WindowChange(size.Height, size.Width)
+	if err != nil {
+		return err
+	}
+	return nil
 }
