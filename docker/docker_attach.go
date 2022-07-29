@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"sheller/machine"
 	conceal "sheller/util/conceal"
 	"sheller/util/secret/vault"
 	"strconv"
@@ -176,11 +175,11 @@ type Terminal struct {
 	TerminalResizeURI string
 }
 
-func (t *Terminal) Resize(size machine.TerminalSize) error {
+func (t *Terminal) Resize(Height int, Width int) error {
 	resizeMessage := struct {
 		H int `json:"h"`
 		W int `json:"w"`
-	}{H: size.Height, W: size.Width}
+	}{H: Height, W: Width}
 	resizeMessageJSON, err := json.Marshal(resizeMessage)
 	if err != nil {
 		return err

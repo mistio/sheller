@@ -36,6 +36,10 @@ const (
 	resizeMessage
 )
 
+type Resizer interface {
+	Resize(Height int, Width int) error
+}
+
 func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, client *websocket.Conn, hostType int) error {
 	defer cancel()
 	for {
@@ -115,7 +119,7 @@ func ClientToHost(ctx context.Context, cancel context.CancelFunc, client *websoc
 					log.Println(err)
 					return
 				}
-				err = resizer.Resize(resizeMessage)
+				err = resizer.Resize(resizeMessage.Height, resizeMessage.Width)
 				if err != nil {
 					log.Println(err)
 					return

@@ -368,7 +368,7 @@ func clientToHostSSH(ctx context.Context, cancel context.CancelFunc, conn *webso
 				log.Println(err)
 				return
 			}
-			err = resizer.Resize(resizeMessage)
+			err = resizer.Resize(resizeMessage.Height, resizeMessage.Width)
 			if err != nil {
 				log.Println(err)
 				return
