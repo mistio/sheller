@@ -14,9 +14,8 @@ import (
 )
 
 const (
-	pongTimeout     = 10 * time.Second
-	hostPongTimeout = 60 * time.Second
-	writeTimeout    = 10 * time.Second
+	pongTimeout  = 10 * time.Second
+	writeTimeout = 10 * time.Second
 )
 
 const (
@@ -28,7 +27,6 @@ func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, 
 	defer wg.Done()
 	defer cancel()
 	// websocket -> server
-	conn.SetReadDeadline(time.Now().Add(pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(pongTimeout)); return nil })
 	for {
 		r, err := sheller.GetNextReader(ctx, conn)
@@ -76,7 +74,6 @@ func WriteToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket
 	defer wg.Done()
 	defer cancel()
 	// websocket -> server
-	conn.SetReadDeadline(time.Now().Add(pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(pongTimeout)); return nil })
 	for {
 		r, err := sheller.GetNextReader(ctx, conn)
@@ -96,7 +93,7 @@ func WriteToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket
 	}
 }
 
-func ForwardHostMessageToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader) {
+func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader) {
 	defer wg.Done()
 	defer cancel()
 	// server -> websocket

@@ -20,9 +20,8 @@ var (
 )
 
 const (
-	pongTimeout     = 10 * time.Second
-	hostPongTimeout = 60 * time.Second
-	writeTimeout    = 10 * time.Second
+	pongTimeout  = 10 * time.Second
+	writeTimeout = 10 * time.Second
 )
 
 const (
@@ -67,10 +66,8 @@ func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, cli
 func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, resizer machine.Resizer, appendByte bool) {
 	defer wg.Done()
 	defer cancel()
-	client.SetReadDeadline(time.Now().Add(pongTimeout))
 	client.SetPongHandler(func(string) error { client.SetReadDeadline(time.Now().Add(pongTimeout)); return nil })
-	host.SetReadDeadline(time.Now().Add(hostPongTimeout))
-	host.SetPongHandler(func(string) error { client.SetReadDeadline(time.Now().Add(hostPongTimeout)); return nil })
+	host.SetPongHandler(func(string) error { client.SetReadDeadline(time.Now().Add(pongTimeout)); return nil })
 	for {
 		r, err := sheller.GetNextReader(ctx, client)
 		if err != nil {

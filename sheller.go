@@ -59,7 +59,7 @@ var (
 	writeTimeout     = flag.Duration("write_timeout", 10*time.Second, "Write timeout.")
 	pongTimeout      = flag.Duration("pong_timeout", 10*time.Second, "Pong message timeout.")
 	// Send pings to peer with this period. Must be less than pongTimeout.
-	pingPeriod = (*pongTimeout * 9) / 10
+	pingPeriod = (*pongTimeout * 2) / 10
 	upgrader   websocket.Upgrader
 )
 
@@ -308,7 +308,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
-
+	conn.SetReadDeadline(time.Time{})
 	WSLogger := websocketLog.WebsocketWriter{
 		Conn: conn,
 	}
@@ -415,7 +415,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		}
 		wg.Add(3)
 		go sshIO.ForwardClientMessageToHost(ctx, cancel, conn, &wg, &resizer, remoteStdin)
-		go sshIO.ForwardHostMessageToHost(ctx, cancel, conn, &wg, remoteStdout)
+		go sshIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, remoteStdout)
 		go pingWebsocket(ctx, cancel, conn, &wg)
 		wg.Wait()
 	} else {
@@ -491,7 +491,7 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	wg.Add(3)
 
 	go sshIO.WriteToHost(ctx, cancel, conn, &wg, s)
-	go sshIO.ForwardHostMessageToHost(ctx, cancel, conn, &wg, s)
+	go sshIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, s)
 	go pingWebsocket(ctx, cancel, conn, &wg)
 
 	wg.Wait()
@@ -542,8 +542,8 @@ func main() {
 	s := &http.Server{
 		Addr:           *listen,
 		Handler:        m,
-		ReadTimeout:    10 * time.Second,
-		WriteTimeout:   10 * time.Second,
+		ReadTimeout:    1000 * time.Second,
+		WriteTimeout:   1000 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
 	log.Fatal(s.ListenAndServe())
