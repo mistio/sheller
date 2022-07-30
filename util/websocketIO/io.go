@@ -26,12 +26,6 @@ const (
 )
 
 const (
-	Kubernetes = iota
-	Docker
-	LXD
-)
-
-const (
 	dataMessage = iota
 	resizeMessage
 )
@@ -40,7 +34,7 @@ type Resizer interface {
 	Resize(Height int, Width int) error
 }
 
-func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, client *websocket.Conn, hostType int) error {
+func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, client *websocket.Conn, appendedByte bool) error {
 	defer cancel()
 	for {
 		r, err := sheller.GetNextReader(ctx, host)
@@ -56,7 +50,7 @@ func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, cli
 		} else {
 			b = b[:n]
 		}
-		if hostType == Kubernetes {
+		if appendedByte {
 			if b[0] == 0 {
 				continue
 			} else {
@@ -70,7 +64,7 @@ func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, cli
 	}
 }
 
-func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, resizer machine.Resizer, hostType int) {
+func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, resizer machine.Resizer, appendByte bool) {
 	defer wg.Done()
 	defer cancel()
 	client.SetReadDeadline(time.Now().Add(pongTimeout))
@@ -99,7 +93,7 @@ func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, 
 				log.Println(err)
 				return
 			}
-			if hostType == Kubernetes {
+			if appendByte {
 				data = append([]byte{0}, data...)
 				if bytes.Contains(data, []byte{newline}) {
 					data = append(data, []byte{carriageReturn, newline}...)
@@ -129,10 +123,10 @@ func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, 
 	}
 }
 
-func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, hostType int) {
+func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, appendedByte bool) {
 	defer wg.Done()
 	defer cancel()
-	if err := writeToClient(ctx, cancel, host, client, hostType); err == io.EOF {
+	if err := writeToClient(ctx, cancel, host, client, appendedByte); err == io.EOF {
 		if err := client.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			time.Now().Add(writeTimeout)); err == websocket.ErrCloseSent {
