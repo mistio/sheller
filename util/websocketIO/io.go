@@ -70,7 +70,7 @@ func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, cli
 	}
 }
 
-func ClientToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, resizer machine.Resizer, hostType int) {
+func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, resizer machine.Resizer, hostType int) {
 	defer wg.Done()
 	defer cancel()
 	client.SetReadDeadline(time.Now().Add(pongTimeout))
@@ -129,7 +129,7 @@ func ClientToHost(ctx context.Context, cancel context.CancelFunc, client *websoc
 	}
 }
 
-func HostToClient(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, hostType int) {
+func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, hostType int) {
 	defer wg.Done()
 	defer cancel()
 	if err := writeToClient(ctx, cancel, host, client, hostType); err == io.EOF {
