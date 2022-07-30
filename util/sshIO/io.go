@@ -1,4 +1,4 @@
-package shellerIO
+package sshIO
 
 import (
 	"context"
@@ -24,7 +24,7 @@ const (
 	resizeMessage
 )
 
-func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer, resizer machine.Resizer) {
+func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, resizer machine.Resizer, writer io.Writer) {
 	defer wg.Done()
 	defer cancel()
 	// websocket -> server
@@ -68,6 +68,7 @@ func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, 
 				return
 			}
 		}
+
 	}
 }
 
@@ -95,7 +96,7 @@ func WriteToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket
 	}
 }
 
-func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader) {
+func ForwardHostMessageToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader) {
 	defer wg.Done()
 	defer cancel()
 	// server -> websocket

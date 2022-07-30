@@ -33,7 +33,7 @@ import (
 	"sheller/lxd"
 	"sheller/machine"
 	"sheller/util/cancelable"
-	shellerIO "sheller/util/shellerIO"
+	sshIO "sheller/util/sshIO"
 	"sheller/util/stream"
 	shellerTLSUtil "sheller/util/tls"
 	"sheller/util/websocketIO"
@@ -420,14 +420,14 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 			Session: session,
 		}
 		wg.Add(3)
-		go shellerIO.ForwardClientMessageToHost(ctx, cancel, conn, &wg, remoteStdin, &resizer)
-		go shellerIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, remoteStdout)
+		go sshIO.ForwardClientMessageToHost(ctx, cancel, conn, &wg, &resizer, remoteStdin)
+		go sshIO.ForwardHostMessageToHost(ctx, cancel, conn, &wg, remoteStdout)
 		go pingWebsocket(ctx, cancel, conn, &wg)
 		wg.Wait()
 	} else {
 		job_id := vars["job_id"]
 		wg.Add(3)
-		go shellerIO.WriteToHost(ctx, cancel, conn, &wg, remoteStdin)
+		go sshIO.WriteToHost(ctx, cancel, conn, &wg, remoteStdin)
 		go stream.HostProducer(ctx, cancel, conn, &wg, remoteStdout, job_id)
 		go pingWebsocket(ctx, cancel, conn, &wg)
 		wg.Wait()
@@ -496,8 +496,8 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	wg.Add(3)
 
-	go shellerIO.WriteToHost(ctx, cancel, conn, &wg, s)
-	go shellerIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, s)
+	go sshIO.WriteToHost(ctx, cancel, conn, &wg, s)
+	go sshIO.ForwardHostMessageToHost(ctx, cancel, conn, &wg, s)
 	go pingWebsocket(ctx, cancel, conn, &wg)
 
 	wg.Wait()
