@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	sheller "sheller/lib"
@@ -49,7 +50,7 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 		}
 		messageType := make([]byte, 1)
 		if _, err := r.Read(messageType); err != nil {
-			log.Println(err)
+			log.Printf(ErrReadMessageType+": %v\n", err)
 			return
 		}
 		switch messageType[0] {
@@ -57,7 +58,7 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 			data := make([]byte, 1)
 			_, err := r.Read(data)
 			if err != nil {
-				log.Println(err)
+				log.Printf(ErrReadClientMessage+": %v\n", err)
 				return
 			}
 			if appendByte {
@@ -68,7 +69,7 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 			}
 			err = host.WriteMessage(websocket.BinaryMessage, data)
 			if err != nil {
-				log.Printf("failed to write to tty: %s", err)
+				log.Printf(ErrWriteToHost+": %v\n", err)
 				return
 			}
 		case resizeMessage:
@@ -82,7 +83,7 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 				}
 				err = resizer.Resize(resizeMessage.Height, resizeMessage.Width)
 				if err != nil {
-					log.Println(err)
+					log.Printf(ErrResizeTerminal+": %v\n", err)
 					return
 				}
 			}
@@ -98,10 +99,10 @@ func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, 
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			time.Now().Add(writeTimeout)); err == websocket.ErrCloseSent {
 		} else if err != nil {
-			log.Printf("Error sending close message: %v", err)
+			log.Printf(ErrSendCloseMessage+": %v\n", err)
 		}
 	} else if err != nil {
-		log.Printf("Reading from file: %v", err)
+		log.Printf(ErrReadHostMessage+": %v\n", err)
 	}
 }
 
@@ -110,14 +111,14 @@ func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, cli
 	for {
 		r, err := sheller.GetNextReader(ctx, host)
 		if err != nil {
-			log.Println(err)
+			return err
 		}
 		if r == nil {
 			return nil
 		}
 		b := make([]byte, 32*1024)
 		if n, err := r.Read(b); err != nil {
-			return err
+			return fmt.Errorf(ErrReadHostMessage+": %v\n", err)
 		} else {
 			b = b[:n]
 		}
@@ -129,8 +130,7 @@ func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, cli
 			}
 		}
 		if err := client.WriteMessage(websocket.BinaryMessage, b); err != nil {
-			log.Println(err)
-			return err
+			return fmt.Errorf(ErrWriteMessageToClient+": %v\n", err)
 		}
 	}
 }
