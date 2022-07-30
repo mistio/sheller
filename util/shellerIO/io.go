@@ -1,10 +1,11 @@
-package lib
+package shellerIO
 
 import (
 	"context"
 	"encoding/json"
 	"io"
 	"log"
+	sheller "sheller/lib"
 	"sheller/machine"
 	"sync"
 	"time"
@@ -30,22 +31,20 @@ func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, 
 	conn.SetReadDeadline(time.Now().Add(pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(pongTimeout)); return nil })
 	for {
-		r, err := GetNextReader(ctx, conn)
+		r, err := sheller.GetNextReader(ctx, conn)
 		if err != nil {
 			log.Println(err)
 			return
 		}
+
 		if r == nil {
 			return
 		}
+
 		dataTypeBuf := make([]byte, 1)
-		readBytes, err := r.Read(dataTypeBuf)
+		_, err = r.Read(dataTypeBuf)
 		if err != nil {
 			log.Println(err)
-			return
-		}
-		if readBytes != 1 {
-			log.Println("Unexpected number of bytes read")
 			return
 		}
 
@@ -79,11 +78,12 @@ func WriteToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket
 	conn.SetReadDeadline(time.Now().Add(pongTimeout))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(pongTimeout)); return nil })
 	for {
-		r, err := GetNextReader(ctx, conn)
+		r, err := sheller.GetNextReader(ctx, conn)
 		if err != nil {
 			log.Println(err)
 			return
 		}
+
 		if r == nil {
 			return
 		}
@@ -100,7 +100,7 @@ func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, 
 	defer cancel()
 	// server -> websocket
 	// TODO: NextWriter() seems to be broken.
-	if err := File2WS(ctx, cancel, reader, conn); err == io.EOF {
+	if err := sheller.File2WS(ctx, cancel, reader, conn); err == io.EOF {
 		if err := conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			time.Now().Add(writeTimeout)); err == websocket.ErrCloseSent {
