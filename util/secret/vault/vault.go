@@ -2,28 +2,29 @@ package vault
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"time"
 )
 
-type Token string
-type SecretPath string
-type Secret map[string]any
+type (
+	Token      string
+	SecretPath string
+	Secret     map[string]any
+)
 
 func GetSecret(t Token, p SecretPath, expiry int64) (Secret, error) {
 	if expiry < time.Now().Unix() {
-		return nil, errors.New("session expired")
+		return nil, ErrSessionExpired
 	}
-	if t == "" {
-		return nil, errors.New("token is empty")
+	if p == "" {
+		return nil, ErrEmptySecretPath
 	}
 	req, err := http.NewRequest("GET", string(p), nil)
 	if err != nil {
 		return nil, err
 	}
-	if p == "" {
-		return nil, errors.New("secret path is empty")
+	if t == "" {
+		return nil, ErrEmptyToken
 	}
 	req.Header.Set("X-Vault-Token", string(t))
 	resp, err := http.DefaultClient.Do(req)
@@ -38,11 +39,11 @@ func GetSecret(t Token, p SecretPath, expiry int64) (Secret, error) {
 	}
 	data, ok := r["data"].(map[string]any)
 	if !ok {
-		return Secret{}, errors.New("vault response for secret not in expected format")
+		return Secret{}, ErrInvalidResponseFormat
 	}
 	secret, ok := data["data"].(map[string]any)
 	if !ok {
-		return Secret{}, errors.New("vault response for secret not in expected format")
+		return Secret{}, ErrInvalidResponseFormat
 	}
 	return Secret(secret), nil
 }
