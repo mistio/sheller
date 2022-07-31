@@ -2,7 +2,6 @@ package lxd
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
@@ -43,27 +42,27 @@ func PrepareConnectionParameters(vars map[string]string) (string, *lxd.Connectio
 	if hasCaCert {
 		CaCert, ok := secretData["ca_cert_file"].(string)
 		if !ok {
-			return "", &lxd.ConnectionArgs{}, errors.New("can't read ca certificate")
+			return "", &lxd.ConnectionArgs{}, ErrReadTLSServerCert
 		}
 		ConnArgs.TLSCA = CaCert
 	}
 	ClientCert, ok := secretData["cert_file"].(string)
 	if !ok {
-		return "", &lxd.ConnectionArgs{}, errors.New("can't read client certificate")
+		return "", &lxd.ConnectionArgs{}, ErrReadTLSClientCert
 	}
 	ConnArgs.TLSClientCert = ClientCert
 	ClientKey, ok := secretData["key_file"].(string)
 	if !ok {
-		return "", &lxd.ConnectionArgs{}, errors.New("can't read client key")
+		return "", &lxd.ConnectionArgs{}, ErrReadTLSClientKey
 	}
 	ConnArgs.TLSClientKey = ClientKey
 	Host, ok := secretData["host"].(string)
 	if !ok {
-		return "", &lxd.ConnectionArgs{}, errors.New("can't read host")
+		return "", &lxd.ConnectionArgs{}, ErrReadHost
 	}
 	Port, ok := secretData["port"].(string)
 	if !ok {
-		return "", &lxd.ConnectionArgs{}, errors.New("can't read port'")
+		return "", &lxd.ConnectionArgs{}, ErrReadPort
 	}
 
 	url := fmt.Sprintf("https://%s:%s", Host, Port)
@@ -95,18 +94,15 @@ func EstablishIOWebsockets(vars map[string]string) (*websocket.Conn, *websocket.
 	secretFDS := op.Get().Metadata["fds"]
 	secret, ok := secretFDS.(map[string]any)
 	if !ok {
-		return nil, nil, errors.
-			New("operation metadata not in expected format")
+		return nil, nil, ErrOperationMetadataInvalidFormat
 	}
 	secret_0, ok := secret["0"].(string)
 	if !ok {
-		return nil, nil, errors.
-			New("secret of websocket connection to bridge pty not in expected format")
+		return nil, nil, ErrWebsocketConnectionSecretInvalidFormat
 	}
 	secret_control, ok := secret["control"].(string)
 	if !ok {
-		return nil, nil, errors.
-			New("secret of websocket control connection not in expected format")
+		return nil, nil, ErrControlWebsocketConnectionSecretInvalidFormat
 	}
 	websocketStream, err := c.GetOperationWebsocket(op.Get().ID, secret_0)
 	if err != nil {
