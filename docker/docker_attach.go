@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -70,41 +69,41 @@ func PrepareAttachConnectionParameters(vars map[string]string) (AttachConnParame
 	if CA, exists := secretData["ca_cert_file"]; exists {
 		CaCert, ok := CA.(string)
 		if !ok {
-			return AttachConnParameters{}, errors.New("can't read ca certificate")
+			return AttachConnParameters{}, ErrReadCA
 		}
 		params.CA = CaCert
 	}
 	if cert, exists := secretData["cert_file"]; exists {
 		ClientCert, ok := cert.(string)
 		if !ok {
-			return AttachConnParameters{}, errors.New("can't read client certificate")
+			return AttachConnParameters{}, ErrReadCert
 		}
 		params.Cert = ClientCert
 	}
 	if key, exists := secretData["key_file"]; exists {
 		ClientKey, ok := key.(string)
 		if !ok {
-			return AttachConnParameters{}, errors.New("can't read key")
+			return AttachConnParameters{}, ErrReadKey
 		}
 		params.Key = ClientKey
 	}
 	if host, exists := secretData["host"]; exists {
 		Host, ok := host.(string)
 		if !ok {
-			return AttachConnParameters{}, errors.New("can't read host")
+			return AttachConnParameters{}, ErrReadHost
 		}
 		params.Host = Host
 	} else {
-		return AttachConnParameters{}, errors.New("host not found")
+		return AttachConnParameters{}, ErrEmptyHost
 	}
 	if port, exists := secretData["port"]; exists {
 		Port, ok := port.(string)
 		if !ok {
-			return AttachConnParameters{}, errors.New("can't read port")
+			return AttachConnParameters{}, ErrReadPort
 		}
 		params.Port = Port
 	} else {
-		return AttachConnParameters{}, errors.New("port not found")
+		return AttachConnParameters{}, ErrEmptyPort
 	}
 	return params, nil
 }
@@ -120,7 +119,7 @@ func attachRequest(args *AttachConnArgs, opts *attachOptions) (*http.Request, er
 	case "http":
 		u.Scheme = "ws"
 	default:
-		return nil, fmt.Errorf("unrecognised URL scheme in %v", u)
+		return nil, fmt.Errorf(ErrInvalidURLScheme+": %v\n", u.Scheme)
 	}
 
 	u.Path = fmt.Sprintf("/containers/%s/attach/ws", args.MachineID)
@@ -163,11 +162,11 @@ func EstablishAttachIOWebsocket(params *AttachConnParameters, args *AttachConnAr
 	if err != nil {
 		return nil, nil, err
 	}
-	podConn, Response, err := dialer.Dial(req.URL.String(), req.Header)
+	containerConn, Response, err := dialer.Dial(req.URL.String(), req.Header)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf(ErrConnectToContainer+": %v\n", err)
 	}
-	return podConn, Response, nil
+	return containerConn, Response, nil
 }
 
 type Terminal struct {
