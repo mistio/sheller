@@ -542,8 +542,8 @@ func main() {
 	s := &http.Server{
 		Addr:           *listen,
 		Handler:        m,
-		ReadTimeout:    1000 * time.Second,
-		WriteTimeout:   1000 * time.Second,
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   10 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
 	log.Fatal(s.ListenAndServe())
