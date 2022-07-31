@@ -33,37 +33,7 @@ type Resizer interface {
 	Resize(Height int, Width int) error
 }
 
-func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, client *websocket.Conn, appendedByte bool) error {
-	defer cancel()
-	for {
-		r, err := sheller.GetNextReader(ctx, host)
-		if err != nil {
-			log.Println(err)
-		}
-		if r == nil {
-			return nil
-		}
-		b := make([]byte, 32*1024)
-		if n, err := r.Read(b); err != nil {
-			return err
-		} else {
-			b = b[:n]
-		}
-		if appendedByte {
-			if b[0] == 0 {
-				continue
-			} else {
-				b = b[1:]
-			}
-		}
-		if err := client.WriteMessage(websocket.BinaryMessage, b); err != nil {
-			log.Println(err)
-			return err
-		}
-	}
-}
-
-func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, resizer machine.Resizer, appendByte bool) {
+func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.CancelFunc, client *websocket.Conn, wg *sync.WaitGroup, host *websocket.Conn, resizer machine.Resizer, appendByte bool) {
 	defer wg.Done()
 	defer cancel()
 	client.SetPongHandler(func(string) error { client.SetReadDeadline(time.Now().Add(pongTimeout)); return nil })
@@ -132,5 +102,35 @@ func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, 
 		}
 	} else if err != nil {
 		log.Printf("Reading from file: %v", err)
+	}
+}
+
+func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, client *websocket.Conn, appendedByte bool) error {
+	defer cancel()
+	for {
+		r, err := sheller.GetNextReader(ctx, host)
+		if err != nil {
+			log.Println(err)
+		}
+		if r == nil {
+			return nil
+		}
+		b := make([]byte, 32*1024)
+		if n, err := r.Read(b); err != nil {
+			return err
+		} else {
+			b = b[:n]
+		}
+		if appendedByte {
+			if b[0] == 0 {
+				continue
+			} else {
+				b = b[1:]
+			}
+		}
+		if err := client.WriteMessage(websocket.BinaryMessage, b); err != nil {
+			log.Println(err)
+			return err
+		}
 	}
 }

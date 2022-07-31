@@ -155,7 +155,7 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 		fmt.Print(err)
 	}
 	wg.Add(4)
-	go websocketIO.ForwardClientMessageToHost(ctx, cancel, clientConn, &wg, podConn, nil, true)
+	go websocketIO.ForwardClientMessageToHostOrResize(ctx, cancel, clientConn, &wg, podConn, nil, true)
 	go websocketIO.ForwardHostMessageToClient(ctx, cancel, clientConn, &wg, podConn, true)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, podConn, &wg)
@@ -240,7 +240,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	defer containerConn.Close()
 	wg := sync.WaitGroup{}
 	wg.Add(4)
-	go websocketIO.ForwardClientMessageToHost(ctx, cancel, clientConn, &wg, containerConn, &resizer, false)
+	go websocketIO.ForwardClientMessageToHostOrResize(ctx, cancel, clientConn, &wg, containerConn, &resizer, false)
 	go websocketIO.ForwardHostMessageToClient(ctx, cancel, clientConn, &wg, containerConn, false)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, containerConn, &wg)
@@ -291,7 +291,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	resizer := lxd.Terminal{
 		ControlConn: controlConn,
 	}
-	go websocketIO.ForwardClientMessageToHost(ctx, cancel, clientConn, &wg, websocketStream, &resizer, false)
+	go websocketIO.ForwardClientMessageToHostOrResize(ctx, cancel, clientConn, &wg, websocketStream, &resizer, false)
 	go websocketIO.ForwardHostMessageToClient(ctx, cancel, clientConn, &wg, websocketStream, false)
 	go pingWebsocket(ctx, cancel, clientConn, &wg)
 	go pingWebsocket(ctx, cancel, websocketStream, &wg)
