@@ -1,7 +1,6 @@
 package kubernetes
 
 import (
-	"errors"
 	"sheller/util/secret/vault"
 
 	"k8s.io/client-go/rest"
@@ -23,7 +22,7 @@ func unmarshalSecret(d vault.Secret) (Secret, string, error) {
 	if hasCA {
 		CAData, ok := d["ca_cert_file"].(string)
 		if !ok {
-			return Secret{}, "", errors.New("can't read ca certificate")
+			return Secret{}, "", ErrReadCA
 		}
 		s.CAData = []byte(CAData)
 	}
@@ -31,7 +30,7 @@ func unmarshalSecret(d vault.Secret) (Secret, string, error) {
 	if hascert {
 		CertData, ok := d["cert_file"].(string)
 		if !ok {
-			return Secret{}, "", errors.New("can't read client certificate")
+			return Secret{}, "", ErrReadCert
 		}
 		s.CertData = []byte(CertData)
 	}
@@ -39,7 +38,7 @@ func unmarshalSecret(d vault.Secret) (Secret, string, error) {
 	if haskey {
 		KeyData, ok := d["key_file"].(string)
 		if !ok {
-			return Secret{}, "", errors.New("can't read key")
+			return Secret{}, "", ErrReadKey
 		}
 		s.KeyData = []byte(KeyData)
 	}
@@ -47,25 +46,25 @@ func unmarshalSecret(d vault.Secret) (Secret, string, error) {
 	if hasBearerToken {
 		BearerToken, ok := d["token"].(string)
 		if !ok {
-			return Secret{}, "", errors.New("can't read bearer token")
+			return Secret{}, "", ErrReadBearerToken
 		}
 		s.BearerToken = BearerToken
 	}
 	_, hasHost := d["host"]
 	if !hasHost {
-		return Secret{}, "", errors.New("did not provide host")
+		return Secret{}, "", ErrEmptyHost
 	}
 	Host, ok := d["host"].(string)
 	if !ok {
-		return Secret{}, "", errors.New("can't read host")
+		return Secret{}, "", ErrReadHost
 	}
 	_, hasPort := d["port"]
 	if !hasPort {
-		return Secret{}, "", errors.New("did not provide port")
+		return Secret{}, "", ErrEmptyPort
 	}
 	Port, ok := d["port"].(string)
 	if !ok {
-		return Secret{}, "", errors.New("can't read port")
+		return Secret{}, "", ErrReadPort
 	}
 	host := "https://" + Host + ":" + Port
 	return s, host, nil
@@ -76,7 +75,7 @@ func (s Secret) Complete() error {
 		(len(s.CAData) > 0 && len(s.CertData) > 0 && len(s.KeyData) > 0) {
 		return nil
 	} else {
-		return errors.New("could not find the necessary kubernetes credentials")
+		return ErrInvalidCredentials
 	}
 
 }

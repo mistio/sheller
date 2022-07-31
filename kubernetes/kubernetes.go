@@ -2,7 +2,6 @@ package kubernetes
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"sheller/util/conceal"
@@ -70,11 +69,11 @@ func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Respon
 	clientConfig = secret.MergeWithConfig(clientConfig)
 	req, err := execRequest(&clientConfig, opts)
 	if err != nil {
-		log.Fatalln(err)
+		return nil, nil, err
 	}
 	tlsConfig, err := rest.TLSConfigFor(&clientConfig)
 	if err != nil {
-		log.Println(err)
+		return nil, nil, fmt.Errorf(ErrKubernetesConfig+": %v\n", err)
 	}
 	dialer := &websocket.Dialer{
 		TLSClientConfig: tlsConfig,
@@ -82,7 +81,7 @@ func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Respon
 	}
 	podConn, Response, err := dialer.Dial(req.URL.String(), req.Header)
 	if err != nil {
-		log.Println(err)
+		return nil, nil, fmt.Errorf(ErrConnectToPod+": %v\n", err)
 	}
 	return podConn, Response, err
 }
@@ -90,7 +89,7 @@ func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Respon
 func execRequest(config *rest.Config, opts *execConfig) (*http.Request, error) {
 	u, err := url.Parse(config.Host)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf(ErrInvalidURLFormat+": %v\n", err)
 	}
 
 	switch u.Scheme {
@@ -99,7 +98,7 @@ func execRequest(config *rest.Config, opts *execConfig) (*http.Request, error) {
 	case "http":
 		u.Scheme = "ws"
 	default:
-		return nil, fmt.Errorf("unrecognised URL scheme in %v", u)
+		return nil, fmt.Errorf(ErrInvalidURLScheme+": %v\n", u.Scheme)
 	}
 
 	u.Path = fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/exec", opts.Namespace, opts.Pod)
