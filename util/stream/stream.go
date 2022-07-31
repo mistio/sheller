@@ -3,7 +3,6 @@ package stream
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -35,7 +34,7 @@ func createEnv() (*stream.Environment, error) {
 			SetPassword(password).
 			SetMaxConsumersPerClient(MaxConsumersPerClient))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf(ErrCreateStreamEnvironment+": %v\n", err)
 	}
 	return env, nil
 }
@@ -58,14 +57,15 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 		},
 	)
 	if err != nil {
-		log.Println(err)
+		log.Printf(ErrDeclareStream+": %v\n", err)
+		return
 	}
 
 	// Create a *stream.Producer and use the stream that was
 	// declared above.
 	producer, err := env.NewProducer(job_id, nil)
 	if err != nil {
-		log.Println(err)
+		log.Printf(ErrCreateProducer+": %v\n", err)
 		return
 	}
 
@@ -75,16 +75,15 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	defer func() {
 		err := producer.Close()
 		if err != nil {
-			log.Println(err)
-			return
+			log.Printf(ErrCloseProducer+": %v\n", err)
 		}
 		err = env.DeleteStream(job_id)
 		if err != nil {
-			log.Println(errors.New("delete stream: " + err.Error()))
+			log.Printf(ErrDeleteStream+": %v\n", err)
 		}
 		err = env.Close()
 		if err != nil {
-			log.Println(err)
+			log.Printf(ErrCloseStreamEnvironment+": %v\n", err)
 		}
 	}()
 	for {
@@ -96,7 +95,7 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 			log.Println("received EOF from host, closing producer...")
 			return
 		} else if err != nil {
-			log.Println(err)
+			log.Printf(ErrReadRemoteStdout+": %v\n", err)
 			return
 		} else {
 			b = b[:n]
@@ -104,11 +103,12 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 		data := bytes.ReplaceAll(b, []byte("\r"), []byte("\n"))
 		err := conn.WriteMessage(websocket.BinaryMessage, data)
 		if err != nil {
-			log.Printf("sending return_code to client: %v\n", err)
+			log.Printf(ErrWriteMessageToAPI+": %v\n", err)
+			return
 		}
 		err = producer.Send(amqp.NewMessage(data))
 		if err != nil {
-			log.Println(err)
+			log.Printf(ErrProducerSendMessage+": %v\n", err)
 			return
 		}
 	}
@@ -129,7 +129,7 @@ func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, 
 		data := fmt.Sprintf("%s\n", message.Data)
 		err := conn.WriteMessage(websocket.BinaryMessage, []byte(strings.ReplaceAll(strings.ReplaceAll(data, "[", ""), "]", "")))
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println(ErrWriteMessageToClient+": %v\n", err)
 			return
 		}
 	}
@@ -142,7 +142,7 @@ func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, 
 			SetConsumerName(consumer_id).
 			SetOffset(stream.OffsetSpecification{}.First()))
 	if err != nil {
-		log.Println(err)
+		log.Println(ErrCreateConsumer+": %v\n", err)
 		return
 	}
 
@@ -153,7 +153,7 @@ func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, 
 		case <-ctx.Done():
 			err = consumerNext.Close()
 			if err != nil {
-				log.Println(err)
+				log.Println(ErrCloseConsumer+": %v\n", err)
 			}
 			return
 		}
