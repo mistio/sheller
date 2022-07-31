@@ -38,18 +38,15 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 		if r == nil {
 			return
 		}
-
-		dataTypeBuf := make([]byte, 1)
-		_, err = r.Read(dataTypeBuf)
-		if err != nil {
-			log.Println(err)
+		messageType := make([]byte, 1)
+		if _, err := r.Read(messageType); err != nil {
+			log.Printf(ErrReadMessageType+": %v\n", err)
 			return
 		}
-
-		switch dataTypeBuf[0] {
+		switch messageType[0] {
 		case dataMessage:
 			if _, err := io.Copy(writer, r); err != nil {
-				log.Printf("Reading from websocket: %v", err)
+				log.Printf(ErrReadClientMessage+": %v\n", err)
 				return
 			}
 		case resizeMessage:
@@ -62,7 +59,7 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 			}
 			err = resizer.Resize(resizeMessage.Height, resizeMessage.Width)
 			if err != nil {
-				log.Println(err)
+				log.Printf(ErrResizeTerminal+": %v\n", err)
 				return
 			}
 		}
@@ -80,14 +77,14 @@ func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, 
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			time.Now().Add(writeTimeout)); err == websocket.ErrCloseSent {
 		} else if err != nil {
-			log.Printf("Error sending close message: %v", err)
+			log.Printf(ErrSendCloseMessage+": %v\n", err)
 		}
 	} else if err != nil {
-		log.Printf("Reading from file: %v", err)
+		log.Printf(ErrReadRemoteStdout+": %v\n", err)
 	}
 }
 
-func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer) {
+func WriteToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer) {
 	defer wg.Done()
 	defer cancel()
 	// websocket -> server
@@ -104,7 +101,7 @@ func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, 
 		}
 
 		if _, err := io.Copy(writer, r); err != nil {
-			log.Printf("Reading from websocket: %v", err)
+			log.Printf(ErrReadClientMessage+": %v\n", err)
 			return
 		}
 	}
