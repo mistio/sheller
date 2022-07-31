@@ -414,14 +414,14 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 			Session: session,
 		}
 		wg.Add(3)
-		go sshIO.ForwardClientMessageToHost(ctx, cancel, conn, &wg, &resizer, remoteStdin)
+		go sshIO.ForwardClientMessageToHostOrResize(ctx, cancel, conn, &wg, &resizer, remoteStdin)
 		go sshIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, remoteStdout)
 		go pingWebsocket(ctx, cancel, conn, &wg)
 		wg.Wait()
 	} else {
 		job_id := vars["job_id"]
 		wg.Add(3)
-		go sshIO.WriteToHost(ctx, cancel, conn, &wg, remoteStdin)
+		go sshIO.ForwardClientMessageToHost(ctx, cancel, conn, &wg, remoteStdin)
 		go stream.HostProducer(ctx, cancel, conn, &wg, remoteStdout, job_id)
 		go pingWebsocket(ctx, cancel, conn, &wg)
 		wg.Wait()
@@ -490,7 +490,7 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	wg.Add(3)
 
-	go sshIO.WriteToHost(ctx, cancel, conn, &wg, s)
+	go sshIO.ForwardClientMessageToHost(ctx, cancel, conn, &wg, s)
 	go sshIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, s)
 	go pingWebsocket(ctx, cancel, conn, &wg)
 

@@ -23,7 +23,7 @@ const (
 	resizeMessage
 )
 
-func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, resizer machine.Resizer, writer io.Writer) {
+func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, resizer machine.Resizer, writer io.Writer) {
 	defer wg.Done()
 	defer cancel()
 	// websocket -> server
@@ -70,7 +70,7 @@ func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, 
 	}
 }
 
-func WriteToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer) {
+func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer) {
 	defer wg.Done()
 	defer cancel()
 	// websocket -> server
