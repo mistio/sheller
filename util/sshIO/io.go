@@ -70,6 +70,23 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 	}
 }
 
+func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader) {
+	defer wg.Done()
+	defer cancel()
+	// server -> websocket
+	// TODO: NextWriter() seems to be broken.
+	if err := sheller.File2WS(ctx, cancel, reader, conn); err == io.EOF {
+		if err := conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			time.Now().Add(writeTimeout)); err == websocket.ErrCloseSent {
+		} else if err != nil {
+			log.Printf("Error sending close message: %v", err)
+		}
+	} else if err != nil {
+		log.Printf("Reading from file: %v", err)
+	}
+}
+
 func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, writer io.Writer) {
 	defer wg.Done()
 	defer cancel()
@@ -90,22 +107,5 @@ func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, 
 			log.Printf("Reading from websocket: %v", err)
 			return
 		}
-	}
-}
-
-func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader) {
-	defer wg.Done()
-	defer cancel()
-	// server -> websocket
-	// TODO: NextWriter() seems to be broken.
-	if err := sheller.File2WS(ctx, cancel, reader, conn); err == io.EOF {
-		if err := conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-			time.Now().Add(writeTimeout)); err == websocket.ErrCloseSent {
-		} else if err != nil {
-			log.Printf("Error sending close message: %v", err)
-		}
-	} else if err != nil {
-		log.Printf("Reading from file: %v", err)
 	}
 }
