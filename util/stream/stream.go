@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -18,21 +19,40 @@ import (
 )
 
 const (
-	host                  = "rabbitmq"
 	port                  = 5552
-	user                  = "guest"
-	password              = "guest"
 	MaxConsumersPerClient = 50
 	StreamCapacity        = 200 // MB
 )
 
+func init() {
+	_, host_exists := os.LookupEnv("RABBITMQ_HOST")
+	_, user_exists := os.LookupEnv("RABBITMQ_USERNAME")
+	_, password_exists := os.LookupEnv("RABBITMQ_PASSWORD")
+	if host_exists && user_exists && password_exists {
+		return
+	} else {
+		err := os.Setenv("RABBITMQ_HOST", "rabbitmq")
+		if err != nil {
+			log.Println(err)
+		}
+		err = os.Setenv("RABBITMQ_USERNAME", "guest")
+		if err != nil {
+			log.Println(err)
+		}
+		err = os.Setenv("RABBITMQ_USERNAME", "guest")
+		if err != nil {
+			log.Println(err)
+		}
+	}
+}
+
 func createEnv() (*stream.Environment, error) {
 	env, err := stream.NewEnvironment(
 		stream.NewEnvironmentOptions().
-			SetHost(host).
+			SetHost(os.Getenv("RABBITMQ_HOST")).
 			SetPort(port).
-			SetUser(user).
-			SetPassword(password).
+			SetUser(os.Getenv("RABBITMQ_USERNAME")).
+			SetPassword(os.Getenv("RABBITMQ_USERNAME")).
 			SetMaxConsumersPerClient(MaxConsumersPerClient))
 	if err != nil {
 		return nil, err
@@ -104,7 +124,7 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 		data := bytes.ReplaceAll(b, []byte("\r"), []byte("\n"))
 		err := conn.WriteMessage(websocket.BinaryMessage, data)
 		if err != nil {
-			log.Printf("sending return_code to client: %v\n", err)
+			log.Println(err)
 		}
 		err = producer.Send(amqp.NewMessage(data))
 		if err != nil {
