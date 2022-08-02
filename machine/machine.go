@@ -11,7 +11,7 @@ import (
 )
 
 type Resizer interface {
-	Resize(TerminalSize) error
+	Resize(Height int, Width int) error
 }
 
 type TerminalSize struct {
@@ -67,8 +67,8 @@ type Terminal struct {
 	Session *ssh.Session
 }
 
-func (t *Terminal) Resize(size TerminalSize) error {
-	err := t.Session.WindowChange(size.Height, size.Width)
+func (t *Terminal) Resize(Height int, Width int) error {
+	err := t.Session.WindowChange(Height, Width)
 	if err != nil {
 		return err
 	}

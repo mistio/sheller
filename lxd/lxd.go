@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sheller/machine"
 	"sheller/util/conceal"
 	"sheller/util/secret/vault"
 	"strconv"
@@ -124,12 +123,12 @@ type Terminal struct {
 	ControlConn *websocket.Conn
 }
 
-func (t *Terminal) Resize(size machine.TerminalSize) error {
+func (t *Terminal) Resize(Height int, Width int) error {
 	msg := api.ContainerExecControl{}
 	msg.Command = "window-resize"
 	msg.Args = make(map[string]string)
-	msg.Args["width"] = strconv.Itoa(size.Width)
-	msg.Args["height"] = strconv.Itoa(size.Height)
+	msg.Args["width"] = strconv.Itoa(Width)
+	msg.Args["height"] = strconv.Itoa(Height)
 	buf, err := json.Marshal(msg)
 	if err != nil {
 		return err
