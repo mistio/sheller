@@ -31,18 +31,7 @@ func init() {
 	if host_exists && user_exists && password_exists {
 		return
 	} else {
-		err := os.Setenv("RABBITMQ_HOST", "rabbitmq")
-		if err != nil {
-			log.Println(err)
-		}
-		err = os.Setenv("RABBITMQ_USERNAME", "guest")
-		if err != nil {
-			log.Println(err)
-		}
-		err = os.Setenv("RABBITMQ_USERNAME", "guest")
-		if err != nil {
-			log.Println(err)
-		}
+		log.Println("RabbitMQ environment variables not found")
 	}
 }
 
@@ -52,7 +41,7 @@ func createEnv() (*stream.Environment, error) {
 			SetHost(os.Getenv("RABBITMQ_HOST")).
 			SetPort(port).
 			SetUser(os.Getenv("RABBITMQ_USERNAME")).
-			SetPassword(os.Getenv("RABBITMQ_USERNAME")).
+			SetPassword(os.Getenv("RABBITMQ_PASSWORD")).
 			SetMaxConsumersPerClient(MaxConsumersPerClient))
 	if err != nil {
 		return nil, err
