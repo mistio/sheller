@@ -385,11 +385,13 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		log.Printf("request for pseudo terminal failed: %s\n", err)
 		return
 	}
-	decodedCommand, err := base64.StdEncoding.DecodeString(command)
+
+	decodedCommand, err := base64.RawURLEncoding.WithPadding('=').DecodeString(command)
 	if err != nil {
 		log.Println(err)
 		return
 	}
+
 	if string(decodedCommand) == "default" {
 		// Start remote shell
 		if err := session.Shell(); err != nil {
@@ -421,7 +423,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	} else {
 		job_id := vars["job_id"]
 		wg.Add(3)
-		go sshIO.ForwardClientMessageToHost(ctx, cancel, conn, &wg, remoteStdin)
 		go stream.HostProducer(ctx, cancel, conn, &wg, remoteStdout, job_id)
 		go pingWebsocket(ctx, cancel, conn, &wg)
 		wg.Wait()
