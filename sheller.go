@@ -410,23 +410,14 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var wg sync.WaitGroup
-	_, job_id_exists := vars["job_id"]
-	if !job_id_exists {
-		resizer := machine.Terminal{
-			Session: session,
-		}
-		wg.Add(3)
-		go sshIO.ForwardClientMessageToHostOrResize(ctx, cancel, conn, &wg, &resizer, remoteStdin)
-		go sshIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, remoteStdout)
-		go pingWebsocket(ctx, cancel, conn, &wg)
-		wg.Wait()
-	} else {
-		job_id := vars["job_id"]
-		wg.Add(2)
-		go stream.HostProducer(ctx, cancel, conn, &wg, remoteStdout, job_id)
-		go pingWebsocket(ctx, cancel, conn, &wg)
-		wg.Wait()
+	resizer := machine.Terminal{
+		Session: session,
 	}
+	wg.Add(3)
+	go sshIO.ForwardClientMessageToHostOrResize(ctx, cancel, conn, &wg, &resizer, remoteStdin)
+	go sshIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, remoteStdout)
+	go pingWebsocket(ctx, cancel, conn, &wg)
+	wg.Wait()
 	log.Println("SSH connection finished")
 }
 
@@ -539,9 +530,6 @@ func main() {
 	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
 	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{command}/{encrypted_msg}/{mac}", handleSSH)
-	// TODO:
-	// Make job_id optional
-	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{command}/{encrypted_msg}/{mac}/{job_id}", handleSSH)
 	m.HandleFunc("/sshJob/sendScript/{job_id}", receiveScriptHandler)
 	m.HandleFunc("/ssh/runScript/{job_id}", runScriptHandler)
 	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
