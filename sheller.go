@@ -422,7 +422,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		wg.Wait()
 	} else {
 		job_id := vars["job_id"]
-		wg.Add(3)
+		wg.Add(2)
 		go stream.HostProducer(ctx, cancel, conn, &wg, remoteStdout, job_id)
 		go pingWebsocket(ctx, cancel, conn, &wg)
 		wg.Wait()
@@ -529,6 +529,9 @@ func main() {
 			return true
 		},
 	}
+
+	jobs = scriptJobs{data: make(map[string]sshRequestPayload)}
+
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
 	m.HandleFunc("/stream/{job_id}", handleLogsConsumer)
@@ -539,6 +542,8 @@ func main() {
 	// TODO:
 	// Make job_id optional
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{command}/{encrypted_msg}/{mac}/{job_id}", handleSSH)
+	m.HandleFunc("/sshJob/sendScript/{job_id}", receiveScriptHandler)
+	m.HandleFunc("/ssh/runScript/{job_id}", runScriptHandler)
 	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,
