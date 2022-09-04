@@ -24,8 +24,8 @@ type KeyPair struct {
 	PrivateKey string
 }
 
-func GetPrivateKey(vars map[string]string) (ssh.AuthMethod, error) {
-	decryptedMessage, err := conceal.Decrypt(vars["encrypted_msg"], "")
+func GetPrivateKey(encryptedMSG, expiry string) (ssh.AuthMethod, error) {
+	decryptedMessage, err := conceal.Decrypt(encryptedMSG, "")
 	if err != nil {
 		return nil, err
 	}
@@ -34,12 +34,12 @@ func GetPrivateKey(vars map[string]string) (ssh.AuthMethod, error) {
 	vault_addr := vault.SecretPath(plaintextParts[1])
 	vault_secret_engine_path := vault.SecretPath(plaintextParts[2])
 	key_path := vault.SecretPath(plaintextParts[3])
-	expiry, err := strconv.ParseInt(vars["expiry"], 10, 64)
+	expiryINT, err := strconv.ParseInt(expiry, 10, 64)
 	if err != nil {
 		return nil, err
 	}
 	secretPath := vault_addr + "/v1/" + vault_secret_engine_path + "/data/" + key_path
-	secretData, err := vault.GetSecret(token, secretPath, expiry)
+	secretData, err := vault.GetSecret(token, secretPath, expiryINT)
 	if err != nil {
 		return nil, err
 	}

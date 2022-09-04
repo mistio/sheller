@@ -58,10 +58,10 @@ func receiveScriptHandler(w http.ResponseWriter, r *http.Request) {
 	var p sshRequestPayload
 	err := decoder.Decode(&p)
 	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+	} else {
 		jobs.update(job_id, p)
 		w.WriteHeader(http.StatusOK)
-	} else {
-		w.WriteHeader(http.StatusBadRequest)
 	}
 }
 
@@ -90,9 +90,8 @@ func runScriptHandler(w http.ResponseWriter, r *http.Request) {
 	command := p.CommandEncoded
 	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
-
 	// Write Data to it
-	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + command + "," + vars["encrypted_msg"]))
+	h.Write([]byte(user + "," + host + "," + port + "," + p.Expiry + "," + command + "," + p.EncryptedMSG))
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
 	if sha != mac {
@@ -100,7 +99,7 @@ func runScriptHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	priv, err := machine.GetPrivateKey(vars)
+	priv, err := machine.GetPrivateKey(p.EncryptedMSG, p.Expiry)
 	if err != nil {
 		log.Println(err)
 		return

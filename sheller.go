@@ -332,7 +332,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	priv, err := machine.GetPrivateKey(vars)
+	priv, err := machine.GetPrivateKey(vars["encrypted_msg"], vars["expiry"])
 	if err != nil {
 		log.Println(err)
 		return
@@ -444,7 +444,7 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	priv, err := machine.GetPrivateKey(vars)
+	priv, err := machine.GetPrivateKey(vars["encrypted_msg"], vars["expiry"])
 	if err != nil {
 		log.Println(err)
 	}
