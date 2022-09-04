@@ -10,6 +10,16 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+type SSHRequest struct {
+	User           string `json:"user"`
+	Hostname       string `json:"hostname"`
+	Port           string `json:"port"`
+	Expiry         string `json:"expiry"`
+	CommandEncoded string `json:"command_encoded"`
+	EncryptedMSG   string `json:"encrypted_msg"`
+	Mac            string `json:"mac"`
+}
+
 type Resizer interface {
 	Resize(Height int, Width int) error
 }
