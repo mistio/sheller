@@ -427,7 +427,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		go pingWebsocket(ctx, cancel, conn, &wg)
 		wg.Wait()
 	}
-	log.Println("SSH connection finished")
+	fmt.Println("SSH connection finished")
 }
 
 func handleVNC(w http.ResponseWriter, r *http.Request) {
