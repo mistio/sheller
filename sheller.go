@@ -62,7 +62,6 @@ var (
 	// Send pings to peer with this period. Must be less than pongTimeout.
 	pingPeriod = (*pongTimeout * 2) / 10
 	upgrader   websocket.Upgrader
-	jobs       machine.ScriptJobs
 )
 
 func init() {
@@ -98,18 +97,108 @@ func init() {
 	}
 }
 
-func receiveScriptHandler(w http.ResponseWriter, r *http.Request) {
+func handleJob(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	vars := mux.Vars(r)
-	job_id := vars["job_id"]
+	_ = vars["job_id"]
 	decoder := json.NewDecoder(r.Body)
 	var p machine.SSHRequest
 	err := decoder.Decode(&p)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
+		log.Println(err)
 	} else {
-		jobs.Update(job_id, p)
 		w.WriteHeader(http.StatusOK)
 	}
+
+	// Create a new HMAC by defining the hash type and the key (as byte array)
+	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
+
+	// Write Data to it
+	h.Write([]byte(p.User + "," + p.Hostname + "," + p.Port + "," + p.Expiry + "," + p.CommandEncoded + "," + p.EncryptedMSG))
+	// Get result and encode as hexadecimal string
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != p.Mac {
+		log.Println("HMAC mismatch")
+		return
+	}
+
+	priv, err := machine.GetPrivateKey(p.EncryptedMSG, p.Expiry)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	config := &ssh.ClientConfig{
+		User: p.User,
+		Auth: []ssh.AuthMethod{
+			priv,
+		},
+		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
+	}
+
+	connSSH, err := ssh.Dial("tcp", p.Hostname+":"+p.Port, config)
+	if err != nil {
+		log.Println("Failed to dial: " + err.Error())
+		return
+	}
+	defer connSSH.Close()
+	// Each ClientConn can support multiple interactive sessions,
+	// represented by a Session.
+	session, err := connSSH.NewSession()
+	if err != nil {
+		log.Println("Failed to create session: " + err.Error())
+		return
+	}
+	defer session.Close()
+	remoteStdout, err := session.StdoutPipe()
+	if err != nil {
+		log.Println("Failed to create stdoutpipe: " + err.Error())
+		return
+	}
+	remoteStdout = cancelable.NewCancelableReader(ctx, remoteStdout)
+
+	// Set up terminal modes
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud
+		ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
+	}
+
+	// Request pseudo terminal
+	if err := session.RequestPty("xterm-256color", 80, 40, modes); err != nil {
+		log.Printf("request for pseudo terminal failed: %s\n", err)
+		return
+	}
+
+	decodedCommand, err := base64.RawURLEncoding.WithPadding('=').DecodeString(p.CommandEncoded)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	if string(decodedCommand) == "default" {
+		// Start remote shell
+		if err := session.Shell(); err != nil {
+			log.Printf("failed to start shell: %s\n", err)
+			return
+		}
+
+	} else {
+
+		err = session.Start(string(decodedCommand))
+		if err != nil {
+			log.Printf("failed to start with command: %s\n", err)
+			return
+		}
+
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go stream.HostProducer(ctx, cancel, &wg, remoteStdout, vars["job_id"])
+	wg.Wait()
 }
 
 func handleLogsConsumer(w http.ResponseWriter, r *http.Request) {
@@ -332,21 +421,15 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 
 	vars := mux.Vars(r)
 	var p machine.SSHRequest
-	if vars["job_id"] == "" {
-		p = machine.SSHRequest{
-			User:           vars["user"],
-			Hostname:       vars["host"],
-			Port:           vars["port"],
-			Expiry:         vars["expiry"],
-			CommandEncoded: vars["command"],
-			EncryptedMSG:   vars["encrypted_msg"],
-			Mac:            vars["mac"],
-		}
-	} else {
-		job_id := vars["job_id"]
-		p = jobs.Get(job_id)
+	p = machine.SSHRequest{
+		User:           vars["user"],
+		Hostname:       vars["host"],
+		Port:           vars["port"],
+		Expiry:         vars["expiry"],
+		CommandEncoded: vars["command"],
+		EncryptedMSG:   vars["encrypted_msg"],
+		Mac:            vars["mac"],
 	}
-
 	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
@@ -441,18 +524,11 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		Session: session,
 	}
 
-	if vars["job_id"] == "" {
-		wg.Add(3)
-		go sshIO.ForwardClientMessageToHostOrResize(ctx, cancel, conn, &wg, &resizer, remoteStdin)
-		go sshIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, remoteStdout)
-		go pingWebsocket(ctx, cancel, conn, &wg)
-		wg.Wait()
-	} else {
-		wg.Add(2)
-		go stream.HostProducer(ctx, cancel, conn, &wg, remoteStdout, vars["job_id"])
-		go pingWebsocket(ctx, cancel, conn, &wg)
-		wg.Wait()
-	}
+	wg.Add(3)
+	go sshIO.ForwardClientMessageToHostOrResize(ctx, cancel, conn, &wg, &resizer, remoteStdin)
+	go sshIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, remoteStdout)
+	go pingWebsocket(ctx, cancel, conn, &wg)
+	wg.Wait()
 
 	fmt.Println("SSH connection finished")
 }
@@ -557,8 +633,6 @@ func main() {
 		},
 	}
 
-	jobs = machine.ScriptJobs{Requests: make(map[string]machine.SSHRequest)}
-
 	log.Printf("sheller %s", sheller.Version)
 	m := mux.NewRouter()
 	m.HandleFunc("/stream/{job_id}", handleLogsConsumer)
@@ -566,8 +640,7 @@ func main() {
 	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
 	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{command}/{encrypted_msg}/{mac}", handleSSH)
-	m.HandleFunc("/sshJob/sendScript/{job_id}", receiveScriptHandler)
-	m.HandleFunc("/ssh/runScript/{job_id}", handleSSH)
+	m.HandleFunc("/ssh/jobs/{job_id}", handleJob)
 	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
 	s := &http.Server{
 		Addr:           *listen,

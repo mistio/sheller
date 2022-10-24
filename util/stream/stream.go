@@ -49,7 +49,7 @@ func createEnv() (*stream.Environment, error) {
 	return env, nil
 }
 
-func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader, job_id string) {
+func HostProducer(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup, reader io.Reader, job_id string) {
 	defer wg.Done()
 	defer cancel()
 
@@ -111,10 +111,6 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 			b = b[:n]
 		}
 		data := bytes.ReplaceAll(b, []byte("\r"), []byte("\n"))
-		err := conn.WriteMessage(websocket.BinaryMessage, data)
-		if err != nil {
-			log.Println(err)
-		}
 		err = producer.Send(amqp.NewMessage(data))
 		if err != nil {
 			log.Println(err)
