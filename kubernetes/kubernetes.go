@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 	"k8s.io/client-go/rest"
 )
 
@@ -74,7 +75,7 @@ func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Respon
 	}
 	tlsConfig, err := rest.TLSConfigFor(&clientConfig)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 	}
 	dialer := &websocket.Dialer{
 		TLSClientConfig: tlsConfig,
@@ -82,7 +83,7 @@ func EstablishIOWebsocket(vars map[string]string) (*websocket.Conn, *http.Respon
 	}
 	podConn, Response, err := dialer.Dial(req.URL.String(), req.Header)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 	}
 	return podConn, Response, err
 }
