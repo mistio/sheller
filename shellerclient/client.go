@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 
 	sheller "sheller/lib"
 )
@@ -60,11 +61,11 @@ func dialError(url string, resp *http.Response, err error) {
 		if *verbose {
 			b, err := ioutil.ReadAll(resp.Body)
 			if err != nil {
-				log.Printf("Failed to read HTTP body: %v", err)
+				zap.S().Warnf("Failed to read HTTP body: %v", err)
 			}
 			extra = "Body:\n" + string(b)
 		}
-		log.Fatalf("%s: HTTP error: %d %s\n%s", err, resp.StatusCode, resp.Status, extra)
+		zap.S().Fatalf("%s: HTTP error: %d %s\n%s", err, resp.StatusCode, resp.Status, extra)
 
 	}
 	log.Fatalf("Dial to %q fail: %v", url, err)
@@ -79,7 +80,7 @@ func main() {
 	url := flag.Arg(0)
 
 	if *verbose {
-		log.Printf("shellerclient %s", sheller.Version)
+		zap.S().Infof("shellerclient %s", sheller.Version)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -92,7 +93,7 @@ func main() {
 	if *basicAuth != "" {
 		ss, err := secretString(*basicAuth)
 		if err != nil {
-			log.Fatalf("Error reading secret string %q: %v", *basicAuth, err)
+			zap.S().Fatalf("Error reading secret string %q: %v", *basicAuth, err)
 		}
 		a := base64.StdEncoding.EncodeToString([]byte(ss))
 		head["Authorization"] = []string{
@@ -120,7 +121,7 @@ func main() {
 				log.Fatal("blah")
 			}
 			if _, err := io.Copy(os.Stdout, r); err != nil {
-				log.Printf("Reading from websocket: %v", err)
+				zap.S().Infof("Reading from websocket: %v", err)
 				cancel()
 			}
 		}
@@ -133,10 +134,10 @@ func main() {
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			time.Now().Add(*writeTimeout)); err == websocket.ErrCloseSent {
 		} else if err != nil {
-			log.Printf("Error sending close message: %v", err)
+			zap.S().Errorf("Error sending close message: %v", err)
 		}
 	} else if err != nil {
-		log.Printf("reading from stdin: %v", err)
+		zap.S().Infof("reading from stdin: %v", err)
 		cancel()
 	}
 

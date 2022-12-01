@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	sheller "sheller/lib"
 	"sheller/machine"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 )
 
 const (
@@ -31,7 +31,7 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 	for {
 		r, err := sheller.GetNextReader(ctx, conn)
 		if err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 			return
 		}
 
@@ -42,14 +42,14 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 		dataTypeBuf := make([]byte, 1)
 		_, err = r.Read(dataTypeBuf)
 		if err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 			return
 		}
 
 		switch dataTypeBuf[0] {
 		case dataMessage:
 			if _, err := io.Copy(writer, r); err != nil {
-				log.Printf("Reading from websocket: %v", err)
+				zap.S().Infof("Reading from websocket: %v", err)
 				return
 			}
 		case resizeMessage:
@@ -57,12 +57,12 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 			resizeMessage := machine.TerminalSize{}
 			err := decoder.Decode(&resizeMessage)
 			if err != nil {
-				log.Println(err)
+				zap.S().Error(err)
 				return
 			}
 			err = resizer.Resize(resizeMessage.Height, resizeMessage.Width)
 			if err != nil {
-				log.Println(err)
+				zap.S().Error(err)
 				return
 			}
 		}
@@ -80,10 +80,10 @@ func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, 
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			time.Now().Add(writeTimeout)); err == websocket.ErrCloseSent {
 		} else if err != nil {
-			log.Printf("Error sending close message: %v", err)
+			zap.S().Warnf("Error sending close message: %v", err)
 		}
 	} else if err != nil {
-		log.Printf("Reading from file: %v", err)
+		zap.S().Infof("Reading from file: %v", err)
 	}
 }
 
@@ -95,7 +95,7 @@ func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, 
 	for {
 		r, err := sheller.GetNextReader(ctx, conn)
 		if err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 			return
 		}
 
@@ -104,7 +104,7 @@ func ForwardClientMessageToHost(ctx context.Context, cancel context.CancelFunc, 
 		}
 
 		if _, err := io.Copy(writer, r); err != nil {
-			log.Printf("Reading from websocket: %v", err)
+			zap.S().Infof("Reading from websocket: %v", err)
 			return
 		}
 	}

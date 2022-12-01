@@ -18,7 +18,7 @@ WSWriter := websocketLog.WebsocketWriter{
     conn: clientConn,
 }
 log := websocketLog.WrapLogger(WSWriter)
-log.Println("some error")
+zap.S().Error("some error")
 
 */
 

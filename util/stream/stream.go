@@ -9,13 +9,13 @@ import (
 	"log"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
+	"go.uber.org/zap"
 )
 
 const (
@@ -31,7 +31,7 @@ func init() {
 	if host_exists && user_exists && password_exists {
 		return
 	} else {
-		log.Println("RabbitMQ environment variables not found")
+		zap.S().Error("RabbitMQ environment variables not found")
 	}
 }
 
@@ -49,32 +49,31 @@ func createEnv() (*stream.Environment, error) {
 	return env, nil
 }
 
-func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup, reader io.Reader, job_id string) {
-	defer wg.Done()
+func HostProducer(ctx context.Context, reader io.Reader, jobID string) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
-
 	// Create stream environment.
 	env, err := createEnv()
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 
-	// Use job_id as the streamName .
-	err = env.DeclareStream(job_id,
+	// Use jobID as the streamName .
+	err = env.DeclareStream(jobID,
 		&stream.StreamOptions{
 			MaxLengthBytes: stream.ByteCapacity{}.MB(StreamCapacity),
 		},
 	)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 	}
 
 	// Create a *stream.Producer and use the stream that was
 	// declared above.
-	producer, err := env.NewProducer(job_id, nil)
+	producer, err := env.NewProducer(jobID, nil)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 
@@ -84,16 +83,16 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 	defer func() {
 		err := producer.Close()
 		if err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 			return
 		}
-		err = env.DeleteStream(job_id)
+		err = env.DeleteStream(jobID)
 		if err != nil {
-			log.Println(errors.New("delete stream: " + err.Error()))
+			zap.S().Error(errors.New("delete stream: " + err.Error()))
 		}
 		err = env.Close()
 		if err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 		}
 	}()
 	for {
@@ -102,33 +101,30 @@ func HostProducer(ctx context.Context, cancel context.CancelFunc, conn *websocke
 		}
 		b := make([]byte, 32*1024)
 		if n, err := reader.Read(b); err == io.EOF {
-			log.Println("received EOF from host, closing producer...")
+			zap.S().Error("received EOF from host, closing producer...")
 			return
 		} else if err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 			return
 		} else {
 			b = b[:n]
 		}
 		data := bytes.ReplaceAll(b, []byte("\r"), []byte("\n"))
-		err := conn.WriteMessage(websocket.BinaryMessage, data)
-		if err != nil {
-			log.Println(err)
-		}
+		zap.S().Infof("Sending data: %s", data)
 		err = producer.Send(amqp.NewMessage(data))
 		if err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 			return
 		}
 	}
 }
 
-func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, job_id string, conn *websocket.Conn, log *log.Logger) {
+func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, jobID string, conn *websocket.Conn, log *log.Logger) {
 	defer cancel()
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(15 * time.Second)); return nil })
 	env, err := createEnv()
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 	defer env.Close()
@@ -145,13 +141,13 @@ func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, 
 
 	// Generate a UUID based on RFC 4122.
 	consumer_id := uuid.New().String()
-	consumerNext, err := env.NewConsumer(job_id,
+	consumerNext, err := env.NewConsumer(jobID,
 		handleMessages,
 		stream.NewConsumerOptions().
 			SetConsumerName(consumer_id).
 			SetOffset(stream.OffsetSpecification{}.First()))
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 
@@ -162,7 +158,7 @@ func JobStreamConsumerWebsocket(ctx context.Context, cancel context.CancelFunc, 
 		case <-ctx.Done():
 			err = consumerNext.Close()
 			if err != nil {
-				log.Println(err)
+				zap.S().Error(err)
 			}
 			return
 		}

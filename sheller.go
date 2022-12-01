@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -45,6 +46,7 @@ import (
 	"github.com/elliotchance/sshtunnel"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 
 	// Main package
 	// amqp 1.0 package to encode messages
@@ -64,6 +66,11 @@ var (
 )
 
 func init() {
+	logger, _ := zap.NewDevelopment() // .NewProduction()
+	zap.ReplaceGlobals(logger)
+	defer logger.Sync()
+	zap.S().Infof("sheller %s", sheller.Version)
+	zap.S().Info("Loading keys")
 	_, secretExists := os.LookupEnv("INTERNAL_KEYS_SECRET")
 	_, signKeyExists := os.LookupEnv("INTERNAL_KEYS_SIGN")
 	if secretExists && signKeyExists {
@@ -71,29 +78,132 @@ func init() {
 	} else {
 		INTERNAL_KEYS_SECRET_file, err := os.Open("secrets/secret.txt")
 		if err != nil {
-			log.Fatal(err)
+			zap.S().Fatal(err)
 		}
 		INTERNAL_KEYS_SIGN_file, err := os.Open("secrets/sign.txt")
 		if err != nil {
-			log.Fatal(err)
+			zap.S().Fatal(err)
 		}
 		secretString, err := ioutil.ReadAll(INTERNAL_KEYS_SECRET_file)
 		if err != nil {
-			log.Fatal(err)
+			zap.S().Fatal(err)
 		}
 		signString, err := ioutil.ReadAll(INTERNAL_KEYS_SIGN_file)
 		if err != nil {
-			log.Fatal(err)
+			zap.S().Fatal(err)
 		}
 		err = os.Setenv("INTERNAL_KEYS_SECRET", string(secretString))
 		if err != nil {
-			log.Fatal(err)
+			zap.S().Fatal(err)
 		}
 		err = os.Setenv("INTERNAL_KEYS_SIGN", string(signString))
 		if err != nil {
-			log.Fatal(err)
+			zap.S().Fatal(err)
 		}
 	}
+	zap.S().Info("Finished loading keys")
+}
+
+func handleJob(w http.ResponseWriter, r *http.Request) {
+	jobID := mux.Vars(r)["job_id"]
+	zap.S().Infof("Handling new job %s", jobID)
+	decoder := json.NewDecoder(r.Body)
+	var p machine.SSHRequest
+	err := decoder.Decode(&p)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		zap.S().Warnw("Job returning bad request")
+		zap.S().Error(err)
+	} else {
+		w.WriteHeader(http.StatusOK)
+		zap.S().Info("Job returning OK")
+		go runScript(jobID, p)
+	}
+	zap.S().Info("Finished job handler")
+}
+
+func runScript(jobID string, req machine.SSHRequest) {
+	ctx := context.Background()
+	zap.S().Infow("Starting runScript")
+	// Create a new HMAC by defining the hash type and the key (as byte array)
+	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
+
+	// Write Data to it
+	h.Write([]byte(req.User + "," + req.Hostname + "," + req.Port + "," + req.Expiry + "," + req.CommandEncoded + "," + req.EncryptedMSG))
+	// Get result and encode as hexadecimal string
+	sha := hex.EncodeToString(h.Sum(nil))
+	if sha != req.Mac {
+		zap.S().Error("HMAC mismatch")
+		return
+	}
+
+	priv, err := machine.GetPrivateKey(req.EncryptedMSG, req.Expiry)
+	if err != nil {
+		zap.S().Error(err)
+		return
+	}
+
+	config := &ssh.ClientConfig{
+		User: req.User,
+		Auth: []ssh.AuthMethod{
+			priv,
+		},
+		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
+	}
+
+	connSSH, err := ssh.Dial("tcp", req.Hostname+":"+req.Port, config)
+	if err != nil {
+		zap.S().Error("Failed to dial: " + err.Error())
+		return
+	}
+	defer connSSH.Close()
+	// Each ClientConn can support multiple interactive sessions,
+	// represented by a Session.
+	session, err := connSSH.NewSession()
+	if err != nil {
+		zap.S().Error("Failed to create session: " + err.Error())
+		return
+	}
+	defer session.Close()
+	remoteStdout, err := session.StdoutPipe()
+	if err != nil {
+		zap.S().Error("Failed to create stdoutpipe: " + err.Error())
+		return
+	}
+	remoteStdout = cancelable.NewCancelableReader(ctx, remoteStdout)
+
+	// Set up terminal modes
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud
+		ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
+	}
+
+	// Request pseudo terminal
+	if err := session.RequestPty("xterm-256color", 80, 40, modes); err != nil {
+		zap.S().Errorf("request for pseudo terminal failed: %s\n", err)
+		return
+	}
+
+	decodedCommand, err := base64.RawURLEncoding.WithPadding('=').DecodeString(req.CommandEncoded)
+	if err != nil {
+		zap.S().Error(err)
+		return
+	}
+	zap.S().Infof("Decoded command: %s", decodedCommand)
+
+	err = session.Start(string(decodedCommand))
+	if err != nil {
+		zap.S().Errorf("failed to start with command: %s\n", err)
+		return
+	}
+	zap.S().Info("Session started")
+
+	stream.HostProducer(ctx, remoteStdout, jobID)
+	zap.S().Infow("Producing logs")
+
+	session.Wait()
+	zap.S().Infow("Finished runScript")
 }
 
 func handleLogsConsumer(w http.ResponseWriter, r *http.Request) {
@@ -139,12 +249,12 @@ func handleKubernetes(w http.ResponseWriter, r *http.Request) {
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
 	if sha != vars["mac"] {
-		log.Println("HMAC mismatch")
+		zap.S().Error("HMAC mismatch")
 		return
 	}
 	podConn, _, err := kubernetes.EstablishIOWebsocket(vars)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 	defer podConn.Close()
@@ -181,7 +291,7 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
 	if sha != mac {
-		log.Println("HMAC mismatch")
+		zap.S().Error("HMAC mismatch")
 		return
 	}
 
@@ -189,11 +299,11 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Print(err)
+		zap.S().Error(err)
 	}
 	attachConnParameters, err := docker.PrepareAttachConnectionParameters(vars)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 	attachConnArguments := &docker.AttachConnArgs{
@@ -210,13 +320,13 @@ func handleDocker(w http.ResponseWriter, r *http.Request) {
 		attachConnArguments.Scheme = "https"
 		tlsConfig, err = shellerTLSUtil.CreateTLSConfig([]byte(attachConnParameters.Cert), []byte(attachConnParameters.Key), []byte(attachConnParameters.CA))
 		if err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 			return
 		}
 	}
 	containerConn, _, err := docker.EstablishAttachIOWebsocket(&attachConnParameters, attachConnArguments, tlsConfig)
 	if err != nil {
-		log.Print(err)
+		zap.S().Error(err)
 		return
 	}
 	client := http.DefaultClient
@@ -266,7 +376,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
 	if sha != mac {
-		log.Println("HMAC mismatch")
+		zap.S().Error("HMAC mismatch")
 		return
 	}
 
@@ -275,7 +385,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	// Use controlConn to send control characters to the terminal.
 	websocketStream, controlConn, err := lxd.EstablishIOWebsockets(vars)
 	if err != nil {
-		log.Print(err)
+		zap.S().Error(err)
 		return
 	}
 	defer websocketStream.Close()
@@ -283,7 +393,7 @@ func handleLXD(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 	defer clientConn.Close()
@@ -304,51 +414,51 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 	defer conn.Close()
 	conn.SetReadDeadline(time.Time{})
-	WSLogger := websocketLog.WebsocketWriter{
-		Conn: conn,
-	}
-	log := websocketLog.WrapLogger(WSLogger)
 
 	vars := mux.Vars(r)
-	user := vars["user"]
-	host := vars["host"]
-	port := vars["port"]
-	mac := vars["mac"]
-	command := vars["command"]
+	p := machine.SSHRequest{
+		User:           vars["user"],
+		Hostname:       vars["host"],
+		Port:           vars["port"],
+		Expiry:         vars["expiry"],
+		CommandEncoded: vars["command"],
+		EncryptedMSG:   vars["encrypted_msg"],
+		Mac:            vars["mac"],
+	}
 	// Create a new HMAC by defining the hash type and the key (as byte array)
 	h := hmac.New(sha256.New, []byte(os.Getenv("INTERNAL_KEYS_SIGN")))
 
 	// Write Data to it
-	h.Write([]byte(user + "," + host + "," + port + "," + vars["expiry"] + "," + command + "," + vars["encrypted_msg"]))
+	h.Write([]byte(p.User + "," + p.Hostname + "," + p.Port + "," + p.Expiry + "," + p.CommandEncoded + "," + p.EncryptedMSG))
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
-	if sha != mac {
-		log.Println("HMAC mismatch")
+	if sha != p.Mac {
+		zap.S().Error("HMAC mismatch")
 		return
 	}
 
-	priv, err := machine.GetPrivateKey(vars)
+	priv, err := machine.GetPrivateKey(p.EncryptedMSG, p.Expiry)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 
 	config := &ssh.ClientConfig{
-		User: user,
+		User: p.User,
 		Auth: []ssh.AuthMethod{
 			priv,
 		},
 		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
 	}
 
-	connSSH, err := ssh.Dial("tcp", host+":"+port, config)
+	connSSH, err := ssh.Dial("tcp", p.Hostname+":"+p.Port, config)
 	if err != nil {
-		log.Println("Failed to dial: " + err.Error())
+		zap.S().Error("Failed to dial: " + err.Error())
 		return
 	}
 	defer connSSH.Close()
@@ -356,19 +466,19 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	// represented by a Session.
 	session, err := connSSH.NewSession()
 	if err != nil {
-		log.Println("Failed to create session: " + err.Error())
+		zap.S().Error("Failed to create session: " + err.Error())
 		return
 	}
 	defer session.Close()
 
 	remoteStdin, err := session.StdinPipe()
 	if err != nil {
-		log.Println("Failed to create stdinpipe: " + err.Error())
+		zap.S().Error("Failed to create stdinpipe: " + err.Error())
 		return
 	}
 	remoteStdout, err := session.StdoutPipe()
 	if err != nil {
-		log.Println("Failed to create stdoutpipe: " + err.Error())
+		zap.S().Error("Failed to create stdoutpipe: " + err.Error())
 		return
 	}
 	remoteStdout = cancelable.NewCancelableReader(ctx, remoteStdout)
@@ -382,20 +492,20 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 
 	// Request pseudo terminal
 	if err := session.RequestPty("xterm-256color", 80, 40, modes); err != nil {
-		log.Printf("request for pseudo terminal failed: %s\n", err)
+		zap.S().Errorf("request for pseudo terminal failed: %s\n", err)
 		return
 	}
 
-	decodedCommand, err := base64.RawURLEncoding.WithPadding('=').DecodeString(command)
+	decodedCommand, err := base64.RawURLEncoding.WithPadding('=').DecodeString(p.CommandEncoded)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 
 	if string(decodedCommand) == "default" {
 		// Start remote shell
 		if err := session.Shell(); err != nil {
-			log.Printf("failed to start shell: %s\n", err)
+			zap.S().Errorf("failed to start shell: %s\n", err)
 			return
 		}
 
@@ -403,31 +513,24 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 
 		err = session.Start(string(decodedCommand))
 		if err != nil {
-			log.Printf("failed to start with command: %s\n", err)
+			zap.S().Errorf("failed to start with command: %s\n", err)
 			return
 		}
 
 	}
 
 	var wg sync.WaitGroup
-	_, job_id_exists := vars["job_id"]
-	if !job_id_exists {
-		resizer := machine.Terminal{
-			Session: session,
-		}
-		wg.Add(3)
-		go sshIO.ForwardClientMessageToHostOrResize(ctx, cancel, conn, &wg, &resizer, remoteStdin)
-		go sshIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, remoteStdout)
-		go pingWebsocket(ctx, cancel, conn, &wg)
-		wg.Wait()
-	} else {
-		job_id := vars["job_id"]
-		wg.Add(3)
-		go stream.HostProducer(ctx, cancel, conn, &wg, remoteStdout, job_id)
-		go pingWebsocket(ctx, cancel, conn, &wg)
-		wg.Wait()
+	resizer := machine.Terminal{
+		Session: session,
 	}
-	log.Println("SSH connection finished")
+
+	wg.Add(3)
+	go sshIO.ForwardClientMessageToHostOrResize(ctx, cancel, conn, &wg, &resizer, remoteStdin)
+	go sshIO.ForwardHostMessageToClient(ctx, cancel, conn, &wg, remoteStdout)
+	go pingWebsocket(ctx, cancel, conn, &wg)
+	wg.Wait()
+
+	fmt.Println("SSH connection finished")
 }
 
 func handleVNC(w http.ResponseWriter, r *http.Request) {
@@ -449,13 +552,13 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	// Get result and encode as hexadecimal string
 	sha := hex.EncodeToString(h.Sum(nil))
 	if sha != mac {
-		log.Println("HMAC mismatch")
+		zap.S().Error("HMAC mismatch")
 		return
 	}
 
-	priv, err := machine.GetPrivateKey(vars)
+	priv, err := machine.GetPrivateKey(vars["encrypted_msg"], vars["expiry"])
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 	}
 	// Setup the tunnel, but do not yet start it yet.
 	tunnel := sshtunnel.NewSSHTunnel(
@@ -477,14 +580,14 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 	defer conn.Close()
 
 	s, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(tunnel.Local.Port)), *dialTimeout)
 	if err != nil {
-		log.Println(err)
+		zap.S().Error(err)
 		return
 	}
 
@@ -496,7 +599,7 @@ func handleVNC(w http.ResponseWriter, r *http.Request) {
 	go pingWebsocket(ctx, cancel, conn, &wg)
 
 	wg.Wait()
-	log.Println("VNC connection finished")
+	zap.S().Info("VNC connection finished")
 }
 
 func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, wg *sync.WaitGroup) {
@@ -508,7 +611,7 @@ func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websock
 		select {
 		case <-ticker.C:
 			if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(*writeTimeout)); err != nil {
-				log.Println("ping:", err)
+				zap.S().Info("ping:", err)
 				return
 			}
 		case <-ctx.Done():
@@ -518,9 +621,9 @@ func pingWebsocket(ctx context.Context, cancel context.CancelFunc, conn *websock
 }
 
 func main() {
+	zap.S().Info("Starting up sheller")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-
 	upgrader = websocket.Upgrader{
 		ReadBufferSize:   1024,
 		WriteBufferSize:  1024,
@@ -529,17 +632,16 @@ func main() {
 			return true
 		},
 	}
-	log.Printf("sheller %s", sheller.Version)
+
 	m := mux.NewRouter()
 	m.HandleFunc("/stream/{job_id}", handleLogsConsumer)
 	m.HandleFunc("/k8s-exec/{pod}/{container}/{cluster}/{expiry}/{encrypted_msg}/{mac}", handleKubernetes)
 	m.HandleFunc("/docker-attach/{name}/{cluster}/{machineID}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleDocker)
 	m.HandleFunc("/lxd-exec/{name}/{cluster}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleLXD)
 	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{command}/{encrypted_msg}/{mac}", handleSSH)
-	// TODO:
-	// Make job_id optional
-	m.HandleFunc("/ssh/{user}/{host}/{port}/{expiry}/{command}/{encrypted_msg}/{mac}/{job_id}", handleSSH)
 	m.HandleFunc("/proxy/{proxy}/{host}/{port}/{expiry}/{encrypted_msg}/{mac}", handleVNC)
+	m.HandleFunc("/ssh/jobs/{job_id}", func(w http.ResponseWriter, r *http.Request) { handleJob(w, r) })
+
 	s := &http.Server{
 		Addr:           *listen,
 		Handler:        m,
@@ -547,5 +649,5 @@ func main() {
 		WriteTimeout:   10 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
-	log.Fatal(s.ListenAndServe())
+	zap.S().Fatal(s.ListenAndServe())
 }

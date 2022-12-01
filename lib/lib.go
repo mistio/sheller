@@ -17,9 +17,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 )
 
 const (
@@ -38,9 +38,9 @@ func File2WS(ctx context.Context, cancel func(), src io.Reader, dst *websocket.C
 		} else {
 			b = b[:n]
 		}
-		//log.Printf("->ws %d bytes: %q", len(b), string(b))
+		//zap.S().Infof("->ws %d bytes: %q", len(b), string(b))
 		if err := dst.WriteMessage(websocket.BinaryMessage, b); err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 			return err
 		}
 	}

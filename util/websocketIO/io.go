@@ -5,13 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	sheller "sheller/lib"
 	"sheller/machine"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 )
 
 var (
@@ -41,7 +41,7 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 	for {
 		r, err := sheller.GetNextReader(ctx, client)
 		if err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 			return
 		}
 		if r == nil {
@@ -49,7 +49,7 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 		}
 		messageType := make([]byte, 1)
 		if _, err := r.Read(messageType); err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 			return
 		}
 		switch messageType[0] {
@@ -57,7 +57,7 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 			data := make([]byte, 1)
 			_, err := r.Read(data)
 			if err != nil {
-				log.Println(err)
+				zap.S().Error(err)
 				return
 			}
 			if appendByte {
@@ -68,7 +68,7 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 			}
 			err = host.WriteMessage(websocket.BinaryMessage, data)
 			if err != nil {
-				log.Printf("failed to write to tty: %s", err)
+				zap.S().Errorf("Failed writing to tty: %s", err)
 				return
 			}
 		case resizeMessage:
@@ -77,12 +77,12 @@ func ForwardClientMessageToHostOrResize(ctx context.Context, cancel context.Canc
 				resizeMessage := machine.TerminalSize{}
 				err := decoder.Decode(&resizeMessage)
 				if err != nil {
-					log.Println(err)
+					zap.S().Error(err)
 					return
 				}
 				err = resizer.Resize(resizeMessage.Height, resizeMessage.Width)
 				if err != nil {
-					log.Println(err)
+					zap.S().Error(err)
 					return
 				}
 			}
@@ -98,10 +98,10 @@ func ForwardHostMessageToClient(ctx context.Context, cancel context.CancelFunc, 
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			time.Now().Add(writeTimeout)); err == websocket.ErrCloseSent {
 		} else if err != nil {
-			log.Printf("Error sending close message: %v", err)
+			zap.S().Warnf("Error sending close message: %v", err)
 		}
 	} else if err != nil {
-		log.Printf("Reading from file: %v", err)
+		zap.S().Infof("Reading from file: %v", err)
 	}
 }
 
@@ -110,7 +110,7 @@ func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, cli
 	for {
 		r, err := sheller.GetNextReader(ctx, host)
 		if err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 		}
 		if r == nil {
 			return nil
@@ -129,7 +129,7 @@ func writeToClient(ctx context.Context, cancel func(), host *websocket.Conn, cli
 			}
 		}
 		if err := client.WriteMessage(websocket.BinaryMessage, b); err != nil {
-			log.Println(err)
+			zap.S().Error(err)
 			return err
 		}
 	}
